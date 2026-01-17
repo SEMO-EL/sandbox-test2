@@ -1,0 +1,527 @@
+<!-- index.html (FULL REPLACEMENT) -->
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width,initial-scale=1.0" />
+  <meta name="description" content="PoseSandbox — a fast browser-based 3D posing sandbox. Pose characters, add props, save poses, export images." />
+  <meta name="theme-color" content="#0b0f17" />
+  <link rel="icon" type="image/svg+xml" href="./assets/favicon.svg">
+  <link rel="icon" type="image/png" sizes="48x48" href="./assets/favicon.png">
+
+  <title>PoseSandbox — Fast 3D Posing in Your Browser</title>
+
+  <!-- SEO / social -->
+  <meta property="og:title" content="PoseSandbox — Fast 3D Posing in Your Browser" />
+  <meta property="og:description" content="Pose characters, add props, save/load poses, export PNG. No install." />
+  <meta property="og:type" content="website" />
+
+  <link rel="preconnect" href="https://fonts.googleapis.com" />
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&display=swap" rel="stylesheet" />
+
+  <!-- Landing-only CSS -->
+  <link rel="stylesheet" href="./landing.css" />
+</head>
+
+<body>
+  <!-- Top Nav -->
+  <header class="nav">
+    <a class="brand" href="./index.html" aria-label="PoseSandbox home">
+      <span class="brand__mark" aria-hidden="true">◼</span>
+      <span class="brand__text">
+        <span class="brand__title">PoseSandbox</span>
+        <span class="brand__tag">3D Posing • Props • Export</span>
+      </span>
+    </a>
+
+    <nav class="nav__links" aria-label="Primary">
+      <a class="nav__link" href="#features">Features</a>
+      <a class="nav__link" href="#packs">Packs</a>
+      <a class="nav__link" href="#faq">FAQ</a>
+      <a class="nav__link nav__link--cta" href="./app.html">Open App</a>
+    </nav>
+
+    <button class="nav__burger" id="btnBurger" aria-label="Open menu" aria-expanded="false" aria-controls="mobileMenu">
+      <span></span><span></span><span></span>
+    </button>
+  </header>
+
+  <!-- Mobile menu -->
+  <div class="mobileMenu" id="mobileMenu" hidden>
+    <a class="mobileMenu__link" href="#features">Features</a>
+    <a class="mobileMenu__link" href="#packs">Packs</a>
+    <a class="mobileMenu__link" href="#faq">FAQ</a>
+    <a class="mobileMenu__link mobileMenu__link--cta" href="./app.html">Open App</a>
+  </div>
+
+  <!-- Hero -->
+  <main>
+    <section class="hero" id="top">
+      <canvas id="hero-bg" aria-hidden="true"></canvas>
+
+      <div class="hero__inner">
+        <div class="hero__left">
+          <div class="pill reveal">
+            <span class="dot"></span>
+            Works in your browser • No install
+          </div>
+
+          <h1 class="reveal">
+            Pose faster.
+            <span class="grad">Create better.</span>
+          </h1>
+
+          <p class="hero__lead reveal">
+            PoseSandbox is a fast 3D posing tool in your browser — rotate joints, move props, save poses, and export PNG in seconds.
+          </p>
+
+          <div class="hero__actions reveal">
+            <a class="btn btn--primary btn--lg" href="./app.html">
+              Start Posing — Free
+              <span class="btn__shine" aria-hidden="true"></span>
+            </a>
+            <a class="btn btn--ghost btn--lg" href="#packs">View Packs</a>
+          </div>
+
+          <div class="hero__meta reveal">
+            <div class="metaCard">
+              <div class="metaCard__k">Save</div>
+              <div class="metaCard__v">JSON Poses</div>
+            </div>
+            <div class="metaCard">
+              <div class="metaCard__k">Export</div>
+              <div class="metaCard__v">PNG Images</div>
+            </div>
+            <div class="metaCard">
+              <div class="metaCard__k">Controls</div>
+              <div class="metaCard__v">1/2/3 Modes</div>
+            </div>
+          </div>
+        </div>
+
+        <div class="hero__right reveal">
+          <div class="previewCard">
+            <div class="previewCard__top">
+              <div class="lights">
+                <span class="l l--r"></span>
+                <span class="l l--y"></span>
+                <span class="l l--g"></span>
+              </div>
+              <div class="previewCard__label">Live preview</div>
+              <div class="kbdRow">
+                <span class="kbd">1</span><span class="kbd">Rotate</span>
+                <span class="kbd">2</span><span class="kbd">Move</span>
+                <span class="kbd">3</span><span class="kbd">Orbit</span>
+              </div>
+            </div>
+
+            <div class="previewCard__body">
+              <div class="mockViewport" aria-hidden="true">
+                <div class="mockGrid"></div>
+                <div class="mockDoll">
+                  <div class="mockHead"></div>
+                  <div class="mockTorso"></div>
+                  <div class="mockArm mockArm--l"></div>
+                  <div class="mockArm mockArm--r"></div>
+                  <div class="mockLeg mockLeg--l"></div>
+                  <div class="mockLeg mockLeg--r"></div>
+                  <div class="mockShadow"></div>
+                </div>
+                <div class="mockGizmo">
+                  <span class="ring ring--x"></span>
+                  <span class="ring ring--y"></span>
+                  <span class="ring ring--z"></span>
+                </div>
+              </div>
+
+              <div class="previewCard__foot">
+                <div class="tinyRow">
+                  <span class="tinyTag">Fast</span>
+                  <span class="tinyTag">Clean UI</span>
+                  <span class="tinyTag">Beginner-friendly</span>
+                </div>
+                <div class="tinyNote">
+                  Open the app to pose the character and export your shots.
+                </div>
+              </div>
+            </div>
+          </div>
+
+          <div class="glow" aria-hidden="true"></div>
+        </div>
+      </div>
+
+      <div class="hero__fade" aria-hidden="true"></div>
+    </section>
+
+    <!-- Features -->
+    <section class="section" id="features">
+      <div class="section__inner">
+        <div class="section__head reveal">
+          <h2>Everything you need to pose</h2>
+          <p>
+            Clean, fast, and easy to use — designed to work smoothly on modern browsers.
+          </p>
+        </div>
+
+        <div class="grid3">
+          <article class="card reveal">
+            <div class="icon">⚙</div>
+            <h3>3 Modes</h3>
+            <p>Rotate / Move / Orbit with buttons or shortcuts <b>1</b>, <b>2</b>, <b>3</b>.</p>
+          </article>
+
+          <article class="card reveal">
+            <div class="icon">💾</div>
+            <h3>Save & Load</h3>
+            <p>Download a pose JSON and load it back anytime to continue.</p>
+          </article>
+
+          <article class="card reveal">
+            <div class="icon">📦</div>
+            <h3>Props</h3>
+            <p>Add cubes/spheres, move them, delete them, or scatter a scene quickly.</p>
+          </article>
+
+          <article class="card reveal">
+            <div class="icon">🖼</div>
+            <h3>Export PNG</h3>
+            <p>Export clean screenshots instantly for references or thumbnails.</p>
+          </article>
+
+          <article class="card reveal">
+            <div class="icon">✨</div>
+            <h3>Lighting & Shadows</h3>
+            <p>Soft shadows + cinematic tone mapping for a polished look by default.</p>
+          </article>
+
+          <article class="card reveal">
+            <div class="icon">🧠</div>
+            <h3>Beginner Friendly</h3>
+            <p>Simple layout, clear controls, and smooth motion — no confusion.</p>
+          </article>
+        </div>
+      </div>
+    </section>
+
+    <!-- Packs -->
+    <section class="section section--alt" id="packs">
+      <div class="section__inner">
+        <div class="section__head reveal">
+          <h2>Packs</h2>
+          <p>
+            Optional add-ons that expand your library with more poses, props, and ready-to-use scenes.
+          </p>
+        </div>
+
+        <div class="pricing">
+          <article class="priceCard reveal">
+            <div class="priceCard__top">
+              <div class="priceCard__name">Starter Pack</div>
+              <div class="priceCard__price">$5</div>
+              <div class="priceCard__desc">Extra props + preset poses</div>
+            </div>
+            <ul class="list">
+              <li>20 preset poses</li>
+              <li>15 extra props</li>
+              <li>Pose gallery templates</li>
+            </ul>
+            <a class="btn btn--ghost btn--full" href="#cta">Get Starter</a>
+          </article>
+
+          <article class="priceCard priceCard--hot reveal">
+            <div class="hot">Most popular</div>
+            <div class="priceCard__top">
+              <div class="priceCard__name">Creator Pack</div>
+              <div class="priceCard__price">$15</div>
+              <div class="priceCard__desc">Best value for creators</div>
+            </div>
+            <ul class="list">
+              <li>60 preset poses</li>
+              <li>50 extra props</li>
+              <li>Scene presets</li>
+              <li>Early access updates</li>
+            </ul>
+            <a class="btn btn--primary btn--full" href="#cta">
+              Get Creator
+              <span class="btn__shine" aria-hidden="true"></span>
+            </a>
+          </article>
+
+          <article class="priceCard reveal">
+            <div class="priceCard__top">
+              <div class="priceCard__name">Studio Pack</div>
+              <div class="priceCard__price">$29</div>
+              <div class="priceCard__desc">For serious workflows</div>
+            </div>
+            <ul class="list">
+              <li>120 preset poses</li>
+              <li>100 extra props</li>
+              <li>Advanced scene kits</li>
+              <li>Priority feature requests</li>
+            </ul>
+            <a class="btn btn--ghost btn--full" href="#cta">Get Studio</a>
+          </article>
+        </div>
+
+        <div class="noteCard reveal" id="cta">
+          <div class="noteCard__left">
+            <h3>Want more content?</h3>
+            <p>
+              Packs add more poses and props so you can work faster and build a bigger library over time.
+            </p>
+          </div>
+          <div class="noteCard__right">
+            <a class="btn btn--primary" href="./app.html">
+              Open PoseSandbox
+              <span class="btn__shine" aria-hidden="true"></span>
+            </a>
+            <a class="btn btn--ghost" href="#faq">See FAQ</a>
+          </div>
+        </div>
+      </div>
+    </section>
+
+    <!-- FAQ -->
+    <section class="section" id="faq">
+      <div class="section__inner">
+        <div class="section__head reveal">
+          <h2>FAQ</h2>
+          <p>Quick answers to common questions.</p>
+        </div>
+
+        <div class="faq">
+          <details class="faqItem reveal">
+            <summary>Does PoseSandbox work in the browser?</summary>
+            <div class="faqItem__body">
+              Yes — PoseSandbox runs directly in modern browsers using static HTML/CSS/JS and Three.js.
+            </div>
+          </details>
+
+          <details class="faqItem reveal">
+            <summary>What’s included in packs?</summary>
+            <div class="faqItem__body">
+              Packs can include extra preset poses, more props, and scene presets — designed to speed up your workflow.
+            </div>
+          </details>
+
+          <details class="faqItem reveal">
+            <summary>What does “Open App” do?</summary>
+            <div class="faqItem__body">
+              It opens <code>app.html</code>, which is the PoseSandbox posing tool.
+            </div>
+          </details>
+
+          <details class="faqItem reveal">
+            <summary>Will the background affect performance?</summary>
+            <div class="faqItem__body">
+              The background is lightweight Canvas2D, scales automatically, and pauses when the tab is hidden.
+            </div>
+          </details>
+        </div>
+      </div>
+    </section>
+  </main>
+
+  <!-- Footer -->
+  <footer class="footer">
+    <div class="footer__inner">
+      <div class="footer__left">
+        <div class="footer__brand">
+          <span class="brand__mark" aria-hidden="true">◼</span>
+          <div>
+            <div class="footer__title">PoseSandbox</div>
+            <div class="footer__muted">Fast 3D posing in your browser</div>
+          </div>
+        </div>
+        <div class="footer__muted">
+          © <span id="year"></span> PoseSandbox • All rights reserved
+        </div>
+      </div>
+
+      <div class="footer__right">
+        <a class="footer__link" href="#top">Back to top</a>
+        <a class="footer__link" href="./app.html">Open App</a>
+      </div>
+    </div>
+  </footer>
+
+  <!-- Smooth transitions + particles + menu -->
+  <script>
+    // Year
+    document.getElementById("year").textContent = new Date().getFullYear();
+
+    // Mobile menu
+    const btnBurger = document.getElementById("btnBurger");
+    const mobileMenu = document.getElementById("mobileMenu");
+
+    function setMobileOpen(open) {
+      btnBurger.setAttribute("aria-expanded", open ? "true" : "false");
+      mobileMenu.hidden = !open;
+      document.body.classList.toggle("menuOpen", open);
+    }
+
+    btnBurger.addEventListener("click", () => {
+      const open = btnBurger.getAttribute("aria-expanded") === "true";
+      setMobileOpen(!open);
+    });
+
+    mobileMenu.addEventListener("click", (e) => {
+      const a = e.target.closest("a");
+      if (a) setMobileOpen(false);
+    });
+
+    // Smooth scroll for same-page anchors (keeps it feeling premium)
+    document.addEventListener("click", (e) => {
+      const a = e.target.closest('a[href^="#"]');
+      if (!a) return;
+      const id = a.getAttribute("href");
+      const el = document.querySelector(id);
+      if (!el) return;
+      e.preventDefault();
+      el.scrollIntoView({ behavior: "smooth", block: "start" });
+      history.pushState(null, "", id);
+    });
+
+    // Reveal on scroll (smooth transitions, not instant jumps)
+    const revealEls = Array.from(document.querySelectorAll(".reveal"));
+    const io = new IntersectionObserver((entries) => {
+      for (const ent of entries) {
+        if (ent.isIntersecting) ent.target.classList.add("is-in");
+      }
+    }, { threshold: 0.12 });
+
+    revealEls.forEach(el => io.observe(el));
+
+    // ----- Particle Background (Canvas2D, lightweight) -----
+    const canvas = document.getElementById("hero-bg");
+    const ctx = canvas.getContext("2d", { alpha: true });
+
+    let W = 0, H = 0, DPR = 1;
+    let particles = [];
+    let mouse = { x: 0, y: 0, active: false };
+    let raf = 0;
+
+    function resize() {
+      DPR = Math.min(window.devicePixelRatio || 1, 2);
+      W = Math.floor(window.innerWidth);
+      H = Math.floor(Math.max(window.innerHeight * 0.78, 520));
+      canvas.style.height = H + "px";
+      canvas.style.width = W + "px";
+      canvas.width = Math.floor(W * DPR);
+      canvas.height = Math.floor(H * DPR);
+      ctx.setTransform(DPR, 0, 0, DPR, 0, 0);
+
+      const targetCount = Math.floor(Math.max(38, Math.min(110, W / 12)));
+      makeParticles(targetCount);
+    }
+
+    function rand(min, max) { return Math.random() * (max - min) + min; }
+
+    function makeParticles(n) {
+      particles = [];
+      for (let i = 0; i < n; i++) {
+        particles.push({
+          x: rand(0, W),
+          y: rand(0, H),
+          vx: rand(-0.35, 0.35),
+          vy: rand(-0.35, 0.35),
+          r: rand(1.1, 2.2)
+        });
+      }
+    }
+
+    function draw() {
+      ctx.clearRect(0, 0, W, H);
+
+      // soft vignette-ish wash
+      const g = ctx.createLinearGradient(0, 0, 0, H);
+      g.addColorStop(0, "rgba(124,92,255,0.10)");
+      g.addColorStop(0.45, "rgba(36,210,255,0.08)");
+      g.addColorStop(1, "rgba(0,0,0,0.00)");
+      ctx.fillStyle = g;
+      ctx.fillRect(0, 0, W, H);
+
+      const maxDist = 120;
+      const maxDist2 = maxDist * maxDist;
+
+      // update
+      for (const p of particles) {
+        p.x += p.vx;
+        p.y += p.vy;
+
+        // gentle mouse influence
+        if (mouse.active) {
+          const dx = p.x - mouse.x;
+          const dy = p.y - mouse.y;
+          const d2 = dx*dx + dy*dy;
+          if (d2 < 220*220) {
+            const f = (1 - Math.sqrt(d2) / 220) * 0.025;
+            p.vx += dx * f * 0.001;
+            p.vy += dy * f * 0.001;
+          }
+        }
+
+        // bounds
+        if (p.x < -20) p.x = W + 20;
+        if (p.x > W + 20) p.x = -20;
+        if (p.y < -20) p.y = H + 20;
+        if (p.y > H + 20) p.y = -20;
+      }
+
+      // lines
+      for (let i = 0; i < particles.length; i++) {
+        const a = particles[i];
+        for (let j = i + 1; j < particles.length; j++) {
+          const b = particles[j];
+          const dx = a.x - b.x;
+          const dy = a.y - b.y;
+          const d2 = dx*dx + dy*dy;
+          if (d2 < maxDist2) {
+            const t = 1 - (Math.sqrt(d2) / maxDist);
+            ctx.strokeStyle = `rgba(255,255,255,${t * 0.20})`;
+            ctx.lineWidth = 1;
+            ctx.beginPath();
+            ctx.moveTo(a.x, a.y);
+            ctx.lineTo(b.x, b.y);
+            ctx.stroke();
+          }
+        }
+      }
+
+      // dots
+      for (const p of particles) {
+        ctx.fillStyle = "rgba(255,255,255,0.55)";
+        ctx.beginPath();
+        ctx.arc(p.x, p.y, p.r, 0, Math.PI * 2);
+        ctx.fill();
+      }
+
+      raf = requestAnimationFrame(draw);
+    }
+
+    function onMouseMove(e) {
+      const rect = canvas.getBoundingClientRect();
+      mouse.x = e.clientX - rect.left;
+      mouse.y = e.clientY - rect.top;
+      mouse.active = true;
+    }
+
+    function onMouseLeave() { mouse.active = false; }
+
+    // pause when tab hidden (efficiency)
+    document.addEventListener("visibilitychange", () => {
+      if (document.hidden) cancelAnimationFrame(raf);
+      else raf = requestAnimationFrame(draw);
+    });
+
+    window.addEventListener("mousemove", onMouseMove);
+    window.addEventListener("mouseleave", onMouseLeave);
+    window.addEventListener("resize", resize);
+
+    resize();
+    draw();
+  </script>
+</body>
+</html>
