@@ -1,81 +1,62 @@
-// engine/loop.js
-// Small render loop utility with optional FPS smoothing hook.
-// Keeps your app.js logic but makes it reusable.
+// engine/renderer.js
+// Creates and manages THREE.WebGLRenderer exactly like your current app.js,
+// but packaged as a module.
 
-export function createLoop({
-  orbit,                 // OrbitControls-like (has update())
-  renderer,              // THREE.WebGLRenderer
-  scene,                 // THREE.Scene
-  camera,                // THREE.Camera
-  getSelected,           // ()=>THREE.Object3D|null
-  getShowOutline,        // ()=>boolean
-  outline,               // THREE.BoxHelper (or null)
-  perf = { enabled: () => false, onFps: () => {} } // optional
+import * as THREE from "three";
+
+export function createRenderer(canvas, {
+  powerPreference = "high-performance",
+  antialias = true,
+  alpha = false,
+  preserveDrawingBuffer = true,
+  maxPixelRatio = 2,
+  toneMappingExposure = 1.05
 } = {}) {
-  if (!renderer || !scene || !camera) {
-    throw new Error("createLoop: renderer/scene/camera are required");
-  }
+  if (!canvas) throw new Error("createRenderer: canvas is required");
 
-  let raf = 0;
-  let running = false;
+  const renderer = new THREE.WebGLRenderer({
+    canvas,
+    antialias,
+    alpha,
+    powerPreference,
+    preserveDrawingBuffer
+  });
 
-  let lastFrameTime = performance.now();
-  let fpsSmoothed = 60;
+  // Same settings as your app.js
+  renderer.outputColorSpace = THREE.SRGBColorSpace;
+  renderer.toneMapping = THREE.ACESFilmicToneMapping;
+  renderer.toneMappingExposure = toneMappingExposure;
 
-  function frame() {
-    if (!running) return;
+  // Shadows (quality upgrade you already had)
+  renderer.shadowMap.enabled = true;
+  renderer.shadowMap.type = THREE.PCFSoftShadowMap;
 
-    raf = requestAnimationFrame(frame);
+  // Initial sizing (safe if canvas has no layout yet)
+  const w = canvas.clientWidth || canvas.width || 1;
+  const h = canvas.clientHeight || canvas.height || 1;
 
-    // Controls update
-    try { orbit?.update?.(); } catch {}
+  renderer.setPixelRatio(Math.min(window.devicePixelRatio || 1, maxPixelRatio));
+  renderer.setSize(w, h, false);
 
-    // Render
-    renderer.render(scene, camera);
+  function resizeToCanvas({
+    camera = null,
+    onAfterResize = null
+  } = {}) {
+    const cw = canvas.clientWidth;
+    const ch = canvas.clientHeight;
+    if (!cw || !ch) return false;
 
-    // Outline refresh (mirrors your app.js behavior)
-    const selected = getSelected ? getSelected() : null;
-    const showOutline = getShowOutline ? !!getShowOutline() : false;
-
-    if (outline && selected && showOutline) {
-      try { outline.setFromObject(selected); } catch {}
+    if (camera && "aspect" in camera) {
+      camera.aspect = cw / ch;
+      camera.updateProjectionMatrix?.();
     }
 
-    // FPS smoothing (same logic as your file)
-    const now = performance.now();
-    const dt = now - lastFrameTime;
-    lastFrameTime = now;
+    renderer.setSize(cw, ch, false);
+    renderer.setPixelRatio(Math.min(window.devicePixelRatio || 1, maxPixelRatio));
 
-    const fps = 1000 / Math.max(1, dt);
-    fpsSmoothed = fpsSmoothed * 0.92 + fps * 0.08;
-
-    // Optional perf hook (so you can toast in the main file)
-    try {
-      if (perf?.enabled?.()) perf.onFps?.(fpsSmoothed, fps, dt);
-    } catch {}
+    try { onAfterResize?.(); } catch {}
+    return true;
   }
 
-  function start() {
-    if (running) return;
-    running = true;
-    lastFrameTime = performance.now();
-    raf = requestAnimationFrame(frame);
-  }
-
-  function stop() {
-    running = false;
-    if (raf) cancelAnimationFrame(raf);
-    raf = 0;
-  }
-
-  function isRunning() {
-    return running;
-  }
-
-  function getFpsSmoothed() {
-    return fpsSmoothed;
-  }
-
-  return { start, stop, isRunning, getFpsSmoothed };
+  return { renderer, resizeToCanvas };
 }
-
