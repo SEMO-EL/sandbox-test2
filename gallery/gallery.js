@@ -1,144 +1,227 @@
-// engine/scene.js
-// Builds the THREE.Scene + camera + orbit + gizmo + helpers exactly like your current app.js,
-// but packaged as a module.
+// gallery/Gallery.js
+// PoseSandbox Gallery (localStorage + thumbnails) extracted from your working app.js.
+// This module does NOT touch three.js directly; it only needs callbacks you pass in.
+// - serializePose(): returns pose object
+// - applyPose(pose): applies pose to scene/world
+// - captureThumbnail(size): returns dataURL png string
+// - showToast(msg, ms): UI feedback
+// - niceTime(iso): formatting helper (optional; if missing, it will show raw iso)
 
-import * as THREE from "three";
-import { OrbitControls } from "three/addons/controls/OrbitControls.js";
-import { TransformControls } from "three/addons/controls/TransformControls.js";
+export class Gallery {
+  constructor(opts = {}) {
+    this.key = opts.key || "pose_sandbox_gallery_v1";
+    this.maxItems = Number.isFinite(opts.maxItems) ? opts.maxItems : 30;
 
-export function setBackgroundTone(scene, mode) {
-  if (!scene) return;
-  if (mode === "studio") scene.background = new THREE.Color(0x10131a);
-  else if (mode === "graphite") scene.background = new THREE.Color(0x0b0b10);
-  else scene.background = new THREE.Color(0x0b0f17); // midnight default
-}
+    this.serializePose = opts.serializePose || null;
+    this.applyPose = opts.applyPose || null;
+    this.captureThumbnail = opts.captureThumbnail || null;
+    this.showToast = opts.showToast || (() => {});
+    this.niceTime = opts.niceTime || ((iso) => String(iso || ""));
 
-export function createScene({
-  canvas,
-  renderer,
-  STATE,
-  showToast,
-  onPointerDown,
-  onKeyDown
-} = {}) {
-  if (!canvas) throw new Error("createScene: canvas is required");
-  if (!renderer) throw new Error("createScene: renderer is required");
+    this.poseNotesEl = opts.poseNotesEl || null; // <textarea> (optional)
+    this.containerEl = opts.containerEl || null; // #poseGallery (required to render)
 
-  const scene = new THREE.Scene();
-  setBackgroundTone(scene, "midnight");
-
-  // Camera (same as app.js)
-  const camera = new THREE.PerspectiveCamera(
-    55,
-    (canvas.clientWidth || 1) / (canvas.clientHeight || 1),
-    0.1,
-    200
-  );
-  camera.position.set(4.6, 3.7, 6.2);
-  camera.lookAt(0, 1.1, 0);
-
-  // Orbit controls (same settings)
-  const orbit = new OrbitControls(camera, renderer.domElement);
-  orbit.enableDamping = true;
-  orbit.dampingFactor = 0.06;
-  orbit.target.set(0, 1.05, 0);
-
-  // Lighting (same as app.js)
-  scene.add(new THREE.HemisphereLight(0x9bb2ff, 0x151a22, 0.35));
-
-  const ambient = new THREE.AmbientLight(0xffffff, 0.22);
-  scene.add(ambient);
-
-  const key = new THREE.DirectionalLight(0xffffff, 0.92);
-  key.position.set(6, 10, 3);
-  key.castShadow = true;
-
-  key.shadow.mapSize.set(2048, 2048);
-  key.shadow.camera.near = 1;
-  key.shadow.camera.far = 40;
-  key.shadow.camera.left = -12;
-  key.shadow.camera.right = 12;
-  key.shadow.camera.top = 12;
-  key.shadow.camera.bottom = -12;
-  key.shadow.bias = -0.00025;
-  key.shadow.normalBias = 0.02;
-
-  scene.add(key);
-
-  const fill = new THREE.DirectionalLight(0x88bbff, 0.30);
-  fill.position.set(-7, 4, -6);
-  scene.add(fill);
-
-  const rim = new THREE.DirectionalLight(0xaad9ff, 0.18);
-  rim.position.set(-2, 3, 8);
-  scene.add(rim);
-
-  // Floor + grid + axes (same)
-  const floorMat = new THREE.MeshStandardMaterial({
-    color: 0x131826,
-    metalness: 0.05,
-    roughness: 0.95
-  });
-  const floor = new THREE.Mesh(new THREE.PlaneGeometry(50, 50), floorMat);
-  floor.rotation.x = -Math.PI / 2;
-  floor.position.y = 0;
-  floor.receiveShadow = true;
-  scene.add(floor);
-
-  const gridHelper = new THREE.GridHelper(50, 50, 0x2a3550, 0x1c2436);
-  gridHelper.position.y = 0.001;
-  scene.add(gridHelper);
-
-  const axesHelper = new THREE.AxesHelper(2.2);
-  axesHelper.visible = false;
-  scene.add(axesHelper);
-
-  // Raycaster + pointer (same)
-  const raycaster = new THREE.Raycaster();
-  const pointer = new THREE.Vector2();
-
-  // Transform controls (gizmo) (same)
-  const gizmo = new TransformControls(camera, renderer.domElement);
-  gizmo.setMode("rotate");
-  gizmo.setSpace("local");
-  gizmo.size = 0.85;
-
-  gizmo.addEventListener("dragging-changed", (e) => {
-    // Orbit ONLY when Orbit mode is active, never during gizmo drag
-    if (orbit) orbit.enabled = !e.value && (STATE?.mode === "orbit");
-    if (e.value && typeof showToast === "function") {
-      showToast(STATE?.mode === "move" ? "Moving…" : "Rotating…");
-    }
-  });
-
-  scene.add(gizmo);
-
-  // Outline helper (same)
-  const outline = new THREE.BoxHelper(new THREE.Object3D(), 0x24d2ff);
-  outline.visible = false;
-  scene.add(outline);
-
-  // Hook events (keep same behavior as your monolith)
-  if (typeof onPointerDown === "function") window.addEventListener("pointerdown", onPointerDown);
-  if (typeof onKeyDown === "function") window.addEventListener("keydown", onKeyDown);
-
-  // Initial visibility derived from STATE if provided
-  if (STATE) {
-    gridHelper.visible = !!STATE.showGrid;
-    axesHelper.visible = !!STATE.showAxes;
+    this.items = [];
+    this.selectedId = null;
   }
 
-  return {
-    scene,
-    camera,
-    orbit,
-    gizmo,
-    axesHelper,
-    gridHelper,
-    outline,
-    raycaster,
-    pointer,
-    floor
-  };
-}
+  /* ---------------- storage ---------------- */
 
+  loadFromStorage() {
+    const raw = localStorage.getItem(this.key);
+    let parsed = [];
+    try {
+      parsed = JSON.parse(raw || "[]");
+    } catch {
+      parsed = [];
+    }
+    if (!Array.isArray(parsed)) parsed = [];
+
+    // keep only valid-ish items
+    parsed = parsed.filter((it) => it && typeof it === "object" && it.id && it.pose && it.thumb);
+    if (parsed.length > this.maxItems) parsed = parsed.slice(0, this.maxItems);
+
+    this.items = parsed;
+    this.ensureSelectionValid();
+  }
+
+  saveToStorage() {
+    try {
+      localStorage.setItem(this.key, JSON.stringify(this.items));
+    } catch (e) {
+      console.warn("Gallery save failed:", e);
+      this.showToast("Gallery save failed (storage full?)", 1800);
+    }
+  }
+
+  /* ---------------- utils ---------------- */
+
+  uid() {
+    return `${Date.now()}_${Math.random().toString(16).slice(2)}`;
+  }
+
+  ensureSelectionValid() {
+    if (!this.selectedId) return;
+    const exists = this.items.some((it) => it.id === this.selectedId);
+    if (!exists) this.selectedId = null;
+  }
+
+  /* ---------------- rendering ---------------- */
+
+  render() {
+    const el = this.containerEl;
+    if (!el) return;
+
+    this.ensureSelectionValid();
+    el.innerHTML = "";
+
+    if (!this.items.length) {
+      const empty = document.createElement("div");
+      empty.className = "hint";
+      empty.textContent = "No poses saved yet. Use “Save JSON” or “Save to Gallery”.";
+      el.appendChild(empty);
+      return;
+    }
+
+    this.items.forEach((it, idx) => {
+      const card = document.createElement("div");
+      card.className = "poseItem" + (it.id === this.selectedId ? " poseItem--active" : "");
+      card.title = "Click to load this pose";
+
+      const badge = document.createElement("div");
+      badge.className = "poseBadge";
+      badge.textContent = String(idx + 1);
+
+      const img = document.createElement("img");
+      img.className = "poseThumb";
+      img.alt = it.name || "Pose";
+      img.loading = "lazy";
+      img.src = it.thumb;
+
+      const meta = document.createElement("div");
+      meta.className = "poseMeta";
+
+      const name = document.createElement("div");
+      name.className = "poseName";
+      name.textContent = it.name || "Untitled pose";
+
+      const time = document.createElement("div");
+      time.className = "poseTime";
+      time.textContent = this.niceTime(it.createdAt || "");
+
+      meta.appendChild(name);
+      meta.appendChild(time);
+
+      card.appendChild(img);
+      card.appendChild(badge);
+      card.appendChild(meta);
+
+      card.addEventListener("click", () => {
+        this.selectedId = it.id;
+        this.render();
+
+        if (typeof this.applyPose === "function") {
+          this.applyPose(it.pose);
+        }
+
+        if (this.poseNotesEl && typeof it.notes === "string") {
+          this.poseNotesEl.value = it.notes;
+        }
+
+        this.showToast(`Loaded: ${it.name || "pose"}`);
+      });
+
+      el.appendChild(card);
+    });
+  }
+
+  /* ---------------- actions ---------------- */
+
+  saveCurrentPoseToGallery({ name = "", withToast = true } = {}) {
+    if (typeof this.serializePose !== "function") {
+      this.showToast("Gallery: serializePose() missing", 1800);
+      return;
+    }
+    if (typeof this.captureThumbnail !== "function") {
+      this.showToast("Gallery: captureThumbnail() missing", 1800);
+      return;
+    }
+
+    const pose = this.serializePose();
+    const thumb = this.captureThumbnail(256);
+
+    if (!thumb) {
+      this.showToast("Thumbnail capture failed", 1600);
+      return;
+    }
+
+    const item = {
+      id: this.uid(),
+      name: String(name || "").trim() || `Pose ${this.items.length + 1}`,
+      createdAt: new Date().toISOString(),
+      notes: String(this.poseNotesEl?.value || ""),
+      pose,
+      thumb
+    };
+
+    this.items.unshift(item);
+    if (this.items.length > this.maxItems) this.items.length = this.maxItems;
+
+    this.selectedId = item.id;
+    this.saveToStorage();
+    this.render();
+
+    if (withToast) this.showToast("Saved to gallery");
+  }
+
+  renameSelected() {
+    if (!this.selectedId) {
+      this.showToast("Select a pose thumbnail first");
+      return;
+    }
+    const it = this.items.find((x) => x.id === this.selectedId);
+    if (!it) return;
+
+    const next = prompt("Rename pose:", it.name || "");
+    if (next === null) return;
+
+    const trimmed = String(next).trim();
+    it.name = trimmed || it.name || "Untitled pose";
+
+    this.saveToStorage();
+    this.render();
+    this.showToast("Pose renamed");
+  }
+
+  deleteSelected() {
+    if (!this.selectedId) {
+      this.showToast("Select a pose thumbnail first");
+      return;
+    }
+    const before = this.items.length;
+    this.items = this.items.filter((x) => x.id !== this.selectedId);
+    this.selectedId = null;
+
+    if (this.items.length === before) return;
+
+    this.saveToStorage();
+    this.render();
+    this.showToast("Pose deleted");
+  }
+
+  clearAll() {
+    if (!this.items.length) {
+      this.showToast("Gallery is already empty");
+      return;
+    }
+    const ok = confirm("Clear ALL saved poses from gallery? (This cannot be undone)");
+    if (!ok) return;
+
+    this.items = [];
+    this.selectedId = null;
+
+    this.saveToStorage();
+    this.render();
+    this.showToast("Gallery cleared");
+  }
+}
