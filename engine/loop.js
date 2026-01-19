@@ -1,89 +1,80 @@
-// core/world.js
-// Owns the scene graph objects that represent the "world":
-// - root: character rig root group
-// - joints: array of joint Groups (named, selectable)
-// - props: array of prop Groups (selectable)
-//
-// This module intentionally keeps state + helpers together.
-// It does NOT create a Three.Scene; it only creates/returns objects you add to a scene.
+// engine/loop.js
+// Small render loop utility with optional FPS smoothing hook.
+// Keeps your app.js logic but makes it reusable.
 
-import * as THREE from "three";
+export function createLoop({
+  orbit,                 // OrbitControls-like (has update())
+  renderer,              // THREE.WebGLRenderer
+  scene,                 // THREE.Scene
+  camera,                // THREE.Camera
+  getSelected,           // ()=>THREE.Object3D|null
+  getShowOutline,        // ()=>boolean
+  outline,               // THREE.BoxHelper (or null)
+  perf = { enabled: () => false, onFps: () => {} } // optional
+} = {}) {
+  if (!renderer || !scene || !camera) {
+    throw new Error("createLoop: renderer/scene/camera are required");
+  }
 
-/**
- * @typedef {Object} World
- * @property {THREE.Group} root
- * @property {THREE.Group[]} joints
- * @property {THREE.Group[]} props
- */
+  let raf = 0;
+  let running = false;
 
-export function createWorld() {
-  /** @type {World} */
-  const world = {
-    root: new THREE.Group(),
-    joints: [],
-    props: []
-  };
+  let lastFrameTime = performance.now();
+  let fpsSmoothed = 60;
 
-  // For safety: name the root group (nice in devtools)
-  world.root.name = "world_root";
+  function frame() {
+    if (!running) return;
 
-  return world;
+    raf = requestAnimationFrame(frame);
+
+    // Controls update
+    try { orbit?.update?.(); } catch {}
+
+    // Render
+    renderer.render(scene, camera);
+
+    // Outline refresh (mirrors your app.js behavior)
+    const selected = getSelected ? getSelected() : null;
+    const showOutline = getShowOutline ? !!getShowOutline() : false;
+
+    if (outline && selected && showOutline) {
+      try { outline.setFromObject(selected); } catch {}
+    }
+
+    // FPS smoothing (same logic as your file)
+    const now = performance.now();
+    const dt = now - lastFrameTime;
+    lastFrameTime = now;
+
+    const fps = 1000 / Math.max(1, dt);
+    fpsSmoothed = fpsSmoothed * 0.92 + fps * 0.08;
+
+    // Optional perf hook (so you can toast in the main file)
+    try {
+      if (perf?.enabled?.()) perf.onFps?.(fpsSmoothed, fps, dt);
+    } catch {}
+  }
+
+  function start() {
+    if (running) return;
+    running = true;
+    lastFrameTime = performance.now();
+    raf = requestAnimationFrame(frame);
+  }
+
+  function stop() {
+    running = false;
+    if (raf) cancelAnimationFrame(raf);
+    raf = 0;
+  }
+
+  function isRunning() {
+    return running;
+  }
+
+  function getFpsSmoothed() {
+    return fpsSmoothed;
+  }
+
+  return { start, stop, isRunning, getFpsSmoothed };
 }
-
-export function resetWorld(world) {
-  // Clear character root + reset arrays
-  world.root.clear();
-  world.joints.length = 0;
-  // props are not children of world.root in your current code; they live in the scene directly.
-  // We still clear the array here so callers can rebuild safely.
-  world.props.length = 0;
-}
-
-export function resetAllJointRotations(world) {
-  // Bulletproof reset (rotation + quaternion)
-  world.joints.forEach(j => {
-    j.rotation.set(0, 0, 0);
-    j.quaternion.identity();
-  });
-}
-
-/**
- * Create a joint group and register it.
- * @param {World} world
- * @param {string} name
- * @param {number} [x=0]
- * @param {number} [y=0]
- * @param {number} [z=0]
- * @returns {THREE.Group}
- */
-export function namedJoint(world, name, x = 0, y = 0, z = 0) {
-  const g = new THREE.Group();
-  g.name = name;
-  g.position.set(x, y, z);
-  g.userData.isJoint = true;
-  world.joints.push(g);
-  return g;
-}
-
-/**
- * Traverse all pickable meshes from character + props.
- * Caller can use this for raycasting.
- * @param {World} world
- * @returns {THREE.Object3D[]}
- */
-export function collectPickables(world) {
-  const pickables = [];
-
-  world.root.traverse(obj => {
-    if (obj && obj.userData && obj.userData.pickable) pickables.push(obj);
-  });
-
-  world.props.forEach(p => {
-    p.traverse(obj => {
-      if (obj && obj.userData && obj.userData.pickable) pickables.push(obj);
-    });
-  });
-
-  return pickables;
-}
-
