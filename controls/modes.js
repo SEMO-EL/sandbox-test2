@@ -1,204 +1,168 @@
-// controls/InputManager.js
-// Centralizes pointer + keyboard input, and emits events.
-// This file is NEW and does NOT duplicate your other files.
+// controls/Modes.js
+// Owns: mode switching (rotate/move/orbit), axis locks, rotate snap.
+// Does NOT duplicate other files. Designed to be used by Engine/App glue.
 
-export class InputManager {
+export class ModesController {
   /**
    * @param {{
-   *   canvas: HTMLCanvasElement,
-   *   windowTarget?: Window,
-   *   helpModal?: HTMLElement|null
+   *  // UI elements
+   *  modeRotateBtn: HTMLElement,
+   *  modeMoveBtn: HTMLElement,
+   *  modeOrbitBtn: HTMLElement,
+   *  axisXBtn: HTMLElement,
+   *  axisYBtn: HTMLElement,
+   *  axisZBtn: HTMLElement,
+   *  rotateSnapSelect: HTMLSelectElement,
+   *
+   *  // three controls
+   *  orbit: any, // OrbitControls instance
+   *  gizmo: any, // TransformControls instance
+   *
+   *  // optional hooks
+   *  toast?: (msg:string, ms?:number)=>void
    * }} opts
    */
   constructor(opts) {
-    this.canvas = opts.canvas;
-    this.win = opts.windowTarget || window;
-    this.helpModal = opts.helpModal || null;
-
-    // listeners registry
-    this._handlers = {
-      pointerdown: [],
-      pointermove: [],
-      pointerup: [],
-      keydown: [],
-      keyup: [],
-      resize: []
+    this.ui = {
+      modeRotate: opts.modeRotateBtn,
+      modeMove: opts.modeMoveBtn,
+      modeOrbit: opts.modeOrbitBtn,
+      axisX: opts.axisXBtn,
+      axisY: opts.axisYBtn,
+      axisZ: opts.axisZBtn,
+      rotateSnap: opts.rotateSnapSelect
     };
 
-    this._bound = {
-      pointerdown: (e) => this._onPointerDown(e),
-      pointermove: (e) => this._onPointerMove(e),
-      pointerup: (e) => this._onPointerUp(e),
-      keydown: (e) => this._onKeyDown(e),
-      keyup: (e) => this._onKeyUp(e),
-      resize: () => this._emit("resize", { type: "resize" })
+    this.orbit = opts.orbit;
+    this.gizmo = opts.gizmo;
+    this.toast = typeof opts.toast === "function" ? opts.toast : null;
+
+    this.state = {
+      mode: "rotate", // "rotate" | "move" | "orbit"
+      axis: { x: true, y: true, z: true },
+      snapDeg: 10
     };
 
-    // state
-    this.pointer = {
-      clientX: 0,
-      clientY: 0,
-      isDown: false,
-      button: 0,
-      pointerId: null
-    };
-
-    this.keys = new Set();
-
-    // attach
-    this.canvas.addEventListener("pointerdown", this._bound.pointerdown, { passive: true });
-    this.canvas.addEventListener("pointermove", this._bound.pointermove, { passive: true });
-    this.canvas.addEventListener("pointerup", this._bound.pointerup, { passive: true });
-
-    this.win.addEventListener("keydown", this._bound.keydown);
-    this.win.addEventListener("keyup", this._bound.keyup);
-    this.win.addEventListener("resize", this._bound.resize);
+    this._bindUI();
+    this.applyState(); // sync to initial
   }
 
-  /**
-   * Subscribe to an event.
-   * @param {"pointerdown"|"pointermove"|"pointerup"|"keydown"|"keyup"|"resize"} type
-   * @param {(evt:any)=>void} fn
-   */
-  on(type, fn) {
-    if (!this._handlers[type]) return () => {};
-    this._handlers[type].push(fn);
-    return () => this.off(type, fn);
-  }
-
-  /**
-   * Unsubscribe.
-   * @param {string} type
-   * @param {(evt:any)=>void} fn
-   */
-  off(type, fn) {
-    const arr = this._handlers[type];
-    if (!arr) return;
-    const i = arr.indexOf(fn);
-    if (i >= 0) arr.splice(i, 1);
-  }
-
-  /** Remove all listeners (useful if you ever rebuild app) */
   destroy() {
-    this.canvas.removeEventListener("pointerdown", this._bound.pointerdown);
-    this.canvas.removeEventListener("pointermove", this._bound.pointermove);
-    this.canvas.removeEventListener("pointerup", this._bound.pointerup);
-
-    this.win.removeEventListener("keydown", this._bound.keydown);
-    this.win.removeEventListener("keyup", this._bound.keyup);
-    this.win.removeEventListener("resize", this._bound.resize);
-
-    Object.keys(this._handlers).forEach(k => (this._handlers[k] = []));
-    this.keys.clear();
+    // If you ever need: remove listeners (kept simple; not required for your current SPA)
   }
 
-  /** @private */
-  _emit(type, evt) {
-    const arr = this._handlers[type];
-    if (!arr || !arr.length) return;
-    for (const fn of arr) {
-      try { fn(evt); } catch (e) { console.error(e); }
+  setMode(mode) {
+    if (mode !== "rotate" && mode !== "move" && mode !== "orbit") return;
+    this.state.mode = mode;
+    this.applyState();
+    this._toast(mode === "rotate" ? "Rotate mode" : mode === "move" ? "Move mode" : "Orbit mode");
+  }
+
+  toggleAxis(key) {
+    if (key !== "x" && key !== "y" && key !== "z") return;
+    this.state.axis[key] = !this.state.axis[key];
+    this.applyState();
+  }
+
+  setSnapDeg(deg) {
+    const n = Number(deg);
+    this.state.snapDeg = Number.isFinite(n) ? n : 0;
+    this.applyState();
+  }
+
+  /**
+   * Apply state to TransformControls + OrbitControls + UI classes.
+   */
+  applyState() {
+    const { mode, axis, snapDeg } = this.state;
+
+    // UI active buttons
+    this._toggleClass(this.ui.modeRotate, "btn--active", mode === "rotate");
+    this._toggleClass(this.ui.modeMove, "btn--active", mode === "move");
+    this._toggleClass(this.ui.modeOrbit, "btn--active", mode === "orbit");
+
+    // axis chips
+    this._toggleClass(this.ui.axisX, "chip--active", !!axis.x);
+    this._toggleClass(this.ui.axisY, "chip--active", !!axis.y);
+    this._toggleClass(this.ui.axisZ, "chip--active", !!axis.z);
+
+    // controls enable/disable
+    const orbOn = mode === "orbit";
+    if (this.gizmo) {
+      this.gizmo.enabled = !orbOn;
+      this.gizmo.setMode(mode === "move" ? "translate" : "rotate");
+
+      this.gizmo.showX = !!axis.x;
+      this.gizmo.showY = !!axis.y;
+      this.gizmo.showZ = !!axis.z;
+
+      // rotation snap only in rotate mode
+      if (mode === "rotate" && snapDeg > 0) {
+        this.gizmo.setRotationSnap(this._degToRad(snapDeg));
+      } else {
+        this.gizmo.setRotationSnap(null);
+      }
+    }
+
+    if (this.orbit) {
+      this.orbit.enabled = orbOn;
+    }
+
+    // keep select UI value in sync
+    if (this.ui.rotateSnap && String(this.ui.rotateSnap.value) !== String(snapDeg)) {
+      // only set if mismatch to avoid moving user selection unexpectedly
+      // but initial might be different -> align with current state
+      this.ui.rotateSnap.value = String(snapDeg);
     }
   }
 
-  /** @private */
-  _isHelpOpen() {
-    // mirror your app.js rule: if help modal is open, block interactions
-    if (!this.helpModal) return false;
-    return !this.helpModal.classList.contains("hidden");
+  /**
+   * Helper for keyboard shortcuts (your app.js uses 1/2/3).
+   * @param {string} keyLower
+   */
+  handleShortcut(keyLower) {
+    if (keyLower === "1") this.setMode("rotate");
+    else if (keyLower === "2") this.setMode("move");
+    else if (keyLower === "3") this.setMode("orbit");
   }
 
-  /** @private */
-  _onPointerDown(e) {
-    if (this._isHelpOpen()) return;
+  _bindUI() {
+    // modes
+    this.ui.modeRotate?.addEventListener("click", () => this.setMode("rotate"));
+    this.ui.modeMove?.addEventListener("click", () => this.setMode("move"));
+    this.ui.modeOrbit?.addEventListener("click", () => this.setMode("orbit"));
 
-    this.pointer.clientX = e.clientX;
-    this.pointer.clientY = e.clientY;
-    this.pointer.isDown = true;
-    this.pointer.button = e.button;
-    this.pointer.pointerId = e.pointerId;
+    // axis
+    this.ui.axisX?.addEventListener("click", () => this.toggleAxis("x"));
+    this.ui.axisY?.addEventListener("click", () => this.toggleAxis("y"));
+    this.ui.axisZ?.addEventListener("click", () => this.toggleAxis("z"));
 
-    this._emit("pointerdown", {
-      type: "pointerdown",
-      originalEvent: e,
-      clientX: e.clientX,
-      clientY: e.clientY,
-      button: e.button,
-      pointerId: e.pointerId
+    // snap
+    this.ui.rotateSnap?.addEventListener("change", () => {
+      const v = Number(this.ui.rotateSnap.value || 0);
+      this.setSnapDeg(v);
     });
+
+    // TransformControls dragging -> disable orbit during drag (matches your current logic)
+    if (this.gizmo && this.orbit) {
+      this.gizmo.addEventListener("dragging-changed", (e) => {
+        // only allow orbit when orbit mode is active and not dragging
+        this.orbit.enabled = !e.value && (this.state.mode === "orbit");
+        if (e.value) this._toast(this.state.mode === "move" ? "Moving…" : "Rotating…");
+      });
+    }
   }
 
-  /** @private */
-  _onPointerMove(e) {
-    this.pointer.clientX = e.clientX;
-    this.pointer.clientY = e.clientY;
-
-    this._emit("pointermove", {
-      type: "pointermove",
-      originalEvent: e,
-      clientX: e.clientX,
-      clientY: e.clientY,
-      isDown: this.pointer.isDown,
-      pointerId: e.pointerId
-    });
+  _toast(msg, ms = 1100) {
+    if (this.toast) this.toast(msg, ms);
   }
 
-  /** @private */
-  _onPointerUp(e) {
-    this.pointer.clientX = e.clientX;
-    this.pointer.clientY = e.clientY;
-    this.pointer.isDown = false;
-
-    this._emit("pointerup", {
-      type: "pointerup",
-      originalEvent: e,
-      clientX: e.clientX,
-      clientY: e.clientY,
-      button: e.button,
-      pointerId: e.pointerId
-    });
+  _toggleClass(el, cls, on) {
+    if (!el) return;
+    el.classList.toggle(cls, !!on);
   }
 
-  /** @private */
-  _onKeyDown(e) {
-    // keep Escape always deliverable (even when help is open)
-    const k = String(e.key || "");
-    const keyLower = k.toLowerCase();
-
-    this.keys.add(k);
-    this.keys.add(keyLower);
-
-    this._emit("keydown", {
-      type: "keydown",
-      originalEvent: e,
-      key: k,
-      keyLower,
-      code: e.code,
-      ctrlKey: !!e.ctrlKey,
-      metaKey: !!e.metaKey,
-      shiftKey: !!e.shiftKey,
-      altKey: !!e.altKey
-    });
-  }
-
-  /** @private */
-  _onKeyUp(e) {
-    const k = String(e.key || "");
-    const keyLower = k.toLowerCase();
-    this.keys.delete(k);
-    this.keys.delete(keyLower);
-
-    this._emit("keyup", {
-      type: "keyup",
-      originalEvent: e,
-      key: k,
-      keyLower,
-      code: e.code,
-      ctrlKey: !!e.ctrlKey,
-      metaKey: !!e.metaKey,
-      shiftKey: !!e.shiftKey,
-      altKey: !!e.altKey
-    });
+  _degToRad(d) {
+    return (d * Math.PI) / 180;
   }
 }
-
