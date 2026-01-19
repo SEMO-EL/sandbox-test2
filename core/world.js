@@ -1,73 +1,88 @@
-// core/state.js
-// Central mutable state for the PoseSandbox app (UI + runtime toggles).
-// Keep it simple: a plain object + small helpers, no Three.js imports.
+// core/world.js
+// Owns the scene graph objects that represent the "world":
+// - root: character rig root group
+// - joints: array of joint Groups (named, selectable)
+// - props: array of prop Groups (selectable)
+//
+// This module intentionally keeps state + helpers together.
+// It does NOT create a Three.Scene; it only creates/returns objects you add to a scene.
+
+import * as THREE from "three";
 
 /**
- * @typedef {Object} AxisState
- * @property {boolean} x
- * @property {boolean} y
- * @property {boolean} z
+ * @typedef {Object} World
+ * @property {THREE.Group} root
+ * @property {THREE.Group[]} joints
+ * @property {THREE.Group[]} props
  */
 
-/**
- * @typedef {Object} AppState
- * @property {"rotate"|"move"|"orbit"} mode
- * @property {AxisState} axis
- * @property {number} snapDeg
- * @property {boolean} showGrid
- * @property {boolean} showAxes
- * @property {boolean} showOutline
- * @property {boolean} perfEnabled
- */
-
-export function createState() {
-  /** @type {AppState} */
-  const STATE = {
-    mode: "rotate",
-    axis: { x: true, y: true, z: true },
-    snapDeg: 10,
-    showGrid: true,
-    showAxes: false,
-    showOutline: true,
-    perfEnabled: false
+export function createWorld() {
+  /** @type {World} */
+  const world = {
+    root: new THREE.Group(),
+    joints: [],
+    props: []
   };
 
-  return STATE;
+  // For safety: name the root group (nice in devtools)
+  world.root.name = "world_root";
+
+  return world;
 }
 
-export function setMode(state, mode) {
-  state.mode = mode;
-  return state.mode;
+export function resetWorld(world) {
+  // Clear character root + reset arrays
+  world.root.clear();
+  world.joints.length = 0;
+  // props are not children of world.root in your current code; they live in the scene directly.
+  // We still clear the array here so callers can rebuild safely.
+  world.props.length = 0;
 }
 
-export function toggleAxis(state, key) {
-  state.axis[key] = !state.axis[key];
-  return state.axis[key];
+export function resetAllJointRotations(world) {
+  // Bulletproof reset (rotation + quaternion)
+  world.joints.forEach(j => {
+    j.rotation.set(0, 0, 0);
+    j.quaternion.identity();
+  });
 }
 
-export function setSnapDeg(state, deg) {
-  const n = Number(deg);
-  state.snapDeg = Number.isFinite(n) ? n : state.snapDeg;
-  return state.snapDeg;
+/**
+ * Create a joint group and register it.
+ * @param {World} world
+ * @param {string} name
+ * @param {number} [x=0]
+ * @param {number} [y=0]
+ * @param {number} [z=0]
+ * @returns {THREE.Group}
+ */
+export function namedJoint(world, name, x = 0, y = 0, z = 0) {
+  const g = new THREE.Group();
+  g.name = name;
+  g.position.set(x, y, z);
+  g.userData.isJoint = true;
+  world.joints.push(g);
+  return g;
 }
 
-export function setShowGrid(state, on) {
-  state.showGrid = !!on;
-  return state.showGrid;
-}
+/**
+ * Traverse all pickable meshes from character + props.
+ * Caller can use this for raycasting.
+ * @param {World} world
+ * @returns {THREE.Object3D[]}
+ */
+export function collectPickables(world) {
+  const pickables = [];
 
-export function setShowAxes(state, on) {
-  state.showAxes = !!on;
-  return state.showAxes;
-}
+  world.root.traverse(obj => {
+    if (obj && obj.userData && obj.userData.pickable) pickables.push(obj);
+  });
 
-export function setShowOutline(state, on) {
-  state.showOutline = !!on;
-  return state.showOutline;
-}
+  world.props.forEach(p => {
+    p.traverse(obj => {
+      if (obj && obj.userData && obj.userData.pickable) pickables.push(obj);
+    });
+  });
 
-export function setPerfEnabled(state, on) {
-  state.perfEnabled = !!on;
-  return state.perfEnabled;
+  return pickables;
 }
-
