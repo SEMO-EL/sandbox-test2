@@ -1,228 +1,192 @@
-// gallery/Gallery.js
-// PoseSandbox Gallery (localStorage + thumbnails) extracted from your working app.js.
-// This module does NOT touch three.js directly; it only needs callbacks you pass in.
-// - serializePose(): returns pose object
-// - applyPose(pose): applies pose to scene/world
-// - captureThumbnail(size): returns dataURL png string
-// - showToast(msg, ms): UI feedback
-// - niceTime(iso): formatting helper (optional; if missing, it will show raw iso)
+// poses/pose-io.js
+// PoseSandbox pose serialization + apply + import helpers
+// Extracted from your working app.js behavior (gallery + props + joints).
+//
+// This module is PURE logic and expects you to inject dependencies from app.js / Engine:
+// - world: { joints: Group[], props: Group[] }
+// - scene: THREE.Scene
+// - poseNotesEl: <textarea> (optional)
+// - addProp(type): (type:"cube"|"sphere") => creates a prop and pushes into world.props + scene.add
+// - showToast(msg, ms)
+// - updateOutline(): refresh outline helper
+// - forceRenderOnce(): (optional) one immediate render after applying
+// - resetAllJointRotations(): (optional but recommended)
+//
+// It also provides importPosePack(files, {applyPose, saveToGallery, renderGallery, showToast})
+// (this matches your "import many json files" goal — creates thumbnails automatically)
 
-export class Gallery {
-  constructor(opts = {}) {
-    this.key = opts.key || "pose_sandbox_gallery_v1";
-    this.maxItems = Number.isFinite(opts.maxItems) ? opts.maxItems : 30;
+export function nowISO() {
+  return new Date().toISOString();
+}
 
-    this.serializePose = opts.serializePose || null;
-    this.applyPose = opts.applyPose || null;
-    this.captureThumbnail = opts.captureThumbnail || null;
-    this.showToast = opts.showToast || (() => {});
-    this.niceTime = opts.niceTime || ((iso) => String(iso || ""));
+/* ---------------- Pose Serialize ---------------- */
 
-    this.poseNotesEl = opts.poseNotesEl || null; // <textarea> (optional)
-    this.containerEl = opts.containerEl || null; // #poseGallery (required to render)
+export function serializePose({ world, poseNotesEl }) {
+  if (!world || !world.joints || !world.props) throw new Error("serializePose: missing world");
 
-    this.items = [];
-    this.selectedId = null;
-  }
+  const joints = {};
+  world.joints.forEach((j) => {
+    joints[j.name] = j.quaternion.toArray();
+  });
 
-  /* ---------------- storage ---------------- */
+  const props = world.props.map((p) => ({
+    name: p.name,
+    position: p.position.toArray(),
+    quaternion: p.quaternion.toArray(),
+    scale: p.scale.toArray()
+  }));
 
-  loadFromStorage() {
-    const raw = localStorage.getItem(this.key);
-    let parsed = [];
-    try {
-      parsed = JSON.parse(raw || "[]");
-    } catch {
-      parsed = [];
-    }
-    if (!Array.isArray(parsed)) parsed = [];
+  return {
+    version: 1,
+    notes: String(poseNotesEl?.value || ""),
+    joints,
+    props,
+    savedAt: nowISO()
+  };
+}
 
-    // keep only valid-ish items
-    parsed = parsed.filter((it) => it && typeof it === "object" && it.id && it.pose && it.thumb);
-    if (parsed.length > this.maxItems) parsed = parsed.slice(0, this.maxItems);
+/* ---------------- Pose Apply ---------------- */
 
-    this.items = parsed;
-    this.ensureSelectionValid();
-  }
+export function applyPose(data, deps) {
+  const {
+    world,
+    scene,
+    poseNotesEl,
+    addProp,
+    showToast,
+    updateOutline,
+    forceRenderOnce
+  } = deps || {};
 
-  saveToStorage() {
-    try {
-      localStorage.setItem(this.key, JSON.stringify(this.items));
-    } catch (e) {
-      console.warn("Gallery save failed:", e);
-      this.showToast("Gallery save failed (storage full?)", 1800);
-    }
-  }
+  if (!data || typeof data !== "object") throw new Error("Invalid pose JSON");
+  if (!world || !world.joints || !world.props) throw new Error("applyPose: missing world");
+  if (!scene) throw new Error("applyPose: missing scene");
 
-  /* ---------------- utils ---------------- */
-
-  uid() {
-    return `${Date.now()}_${Math.random().toString(16).slice(2)}`;
-  }
-
-  ensureSelectionValid() {
-    if (!this.selectedId) return;
-    const exists = this.items.some((it) => it.id === this.selectedId);
-    if (!exists) this.selectedId = null;
-  }
-
-  /* ---------------- rendering ---------------- */
-
-  render() {
-    const el = this.containerEl;
-    if (!el) return;
-
-    this.ensureSelectionValid();
-    el.innerHTML = "";
-
-    if (!this.items.length) {
-      const empty = document.createElement("div");
-      empty.className = "hint";
-      empty.textContent = "No poses saved yet. Use “Save JSON” or “Save to Gallery”.";
-      el.appendChild(empty);
-      return;
-    }
-
-    this.items.forEach((it, idx) => {
-      const card = document.createElement("div");
-      card.className = "poseItem" + (it.id === this.selectedId ? " poseItem--active" : "");
-      card.title = "Click to load this pose";
-
-      const badge = document.createElement("div");
-      badge.className = "poseBadge";
-      badge.textContent = String(idx + 1);
-
-      const img = document.createElement("img");
-      img.className = "poseThumb";
-      img.alt = it.name || "Pose";
-      img.loading = "lazy";
-      img.src = it.thumb;
-
-      const meta = document.createElement("div");
-      meta.className = "poseMeta";
-
-      const name = document.createElement("div");
-      name.className = "poseName";
-      name.textContent = it.name || "Untitled pose";
-
-      const time = document.createElement("div");
-      time.className = "poseTime";
-      time.textContent = this.niceTime(it.createdAt || "");
-
-      meta.appendChild(name);
-      meta.appendChild(time);
-
-      card.appendChild(img);
-      card.appendChild(badge);
-      card.appendChild(meta);
-
-      card.addEventListener("click", () => {
-        this.selectedId = it.id;
-        this.render();
-
-        if (typeof this.applyPose === "function") {
-          this.applyPose(it.pose);
-        }
-
-        if (this.poseNotesEl && typeof it.notes === "string") {
-          this.poseNotesEl.value = it.notes;
-        }
-
-        this.showToast(`Loaded: ${it.name || "pose"}`);
-      });
-
-      el.appendChild(card);
+  // Apply joints
+  if (data.joints && typeof data.joints === "object") {
+    world.joints.forEach((j) => {
+      const q = data.joints[j.name];
+      if (Array.isArray(q) && q.length === 4) j.quaternion.fromArray(q);
     });
   }
 
-  /* ---------------- actions ---------------- */
+  // Apply props (rebuild like your app.js)
+  if (Array.isArray(data.props)) {
+    // remove old
+    world.props.forEach((p) => scene.remove(p));
+    world.props.length = 0;
 
-  saveCurrentPoseToGallery({ name = "", withToast = true } = {}) {
-    if (typeof this.serializePose !== "function") {
-      this.showToast("Gallery: serializePose() missing", 1800);
-      return;
-    }
-    if (typeof this.captureThumbnail !== "function") {
-      this.showToast("Gallery: captureThumbnail() missing", 1800);
-      return;
-    }
+    // add new
+    data.props.forEach((pd) => {
+      const isCube = String(pd?.name || "").toLowerCase().includes("cube");
+      if (typeof addProp !== "function") {
+        // fallback: skip creation if addProp missing
+        return;
+      }
+      addProp(isCube ? "cube" : "sphere");
 
-    const pose = this.serializePose();
-    const thumb = this.captureThumbnail(256);
+      const p = world.props[world.props.length - 1];
+      if (!p) return;
 
-    if (!thumb) {
-      this.showToast("Thumbnail capture failed", 1600);
-      return;
-    }
-
-    const item = {
-      id: this.uid(),
-      name: String(name || "").trim() || `Pose ${this.items.length + 1}`,
-      createdAt: new Date().toISOString(),
-      notes: String(this.poseNotesEl?.value || ""),
-      pose,
-      thumb
-    };
-
-    this.items.unshift(item);
-    if (this.items.length > this.maxItems) this.items.length = this.maxItems;
-
-    this.selectedId = item.id;
-    this.saveToStorage();
-    this.render();
-
-    if (withToast) this.showToast("Saved to gallery");
+      if (pd.position) p.position.fromArray(pd.position);
+      if (pd.quaternion) p.quaternion.fromArray(pd.quaternion);
+      if (pd.scale) p.scale.fromArray(pd.scale);
+      if (pd.name) p.name = pd.name;
+    });
   }
 
-  renameSelected() {
-    if (!this.selectedId) {
-      this.showToast("Select a pose thumbnail first");
-      return;
-    }
-    const it = this.items.find((x) => x.id === this.selectedId);
-    if (!it) return;
-
-    const next = prompt("Rename pose:", it.name || "");
-    if (next === null) return;
-
-    const trimmed = String(next).trim();
-    it.name = trimmed || it.name || "Untitled pose";
-
-    this.saveToStorage();
-    this.render();
-    this.showToast("Pose renamed");
+  // Notes
+  if (poseNotesEl && typeof data.notes === "string") {
+    poseNotesEl.value = data.notes;
   }
 
-  deleteSelected() {
-    if (!this.selectedId) {
-      this.showToast("Select a pose thumbnail first");
-      return;
-    }
-    const before = this.items.length;
-    this.items = this.items.filter((x) => x.id !== this.selectedId);
-    this.selectedId = null;
+  // Visual refresh hooks
+  if (typeof updateOutline === "function") updateOutline();
+  if (typeof forceRenderOnce === "function") forceRenderOnce();
 
-    if (this.items.length === before) return;
-
-    this.saveToStorage();
-    this.render();
-    this.showToast("Pose deleted");
-  }
-
-  clearAll() {
-    if (!this.items.length) {
-      this.showToast("Gallery is already empty");
-      return;
-    }
-    const ok = confirm("Clear ALL saved poses from gallery? (This cannot be undone)");
-    if (!ok) return;
-
-    this.items = [];
-    this.selectedId = null;
-
-    this.saveToStorage();
-    this.render();
-    this.showToast("Gallery cleared");
-  }
+  if (typeof showToast === "function") showToast("Pose loaded");
 }
 
+export function applyPoseJointsOnly(data, deps) {
+  const {
+    world,
+    resetAllJointRotations,
+    showToast,
+    updateOutline,
+    forceRenderOnce
+  } = deps || {};
+
+  if (!data || typeof data !== "object") throw new Error("Invalid preset/pose object");
+  if (!data.joints || typeof data.joints !== "object") throw new Error("Pose missing joints");
+  if (!world || !world.joints) throw new Error("applyPoseJointsOnly: missing world");
+
+  // Important: reset first so the preset clearly applies
+  if (typeof resetAllJointRotations === "function") resetAllJointRotations();
+
+  let appliedCount = 0;
+  world.joints.forEach((j) => {
+    const q = data.joints[j.name];
+    if (Array.isArray(q) && q.length === 4) {
+      j.quaternion.fromArray(q);
+      appliedCount++;
+    }
+  });
+
+  if (typeof updateOutline === "function") updateOutline();
+  if (typeof forceRenderOnce === "function") forceRenderOnce();
+
+  if (typeof showToast === "function") {
+    if (appliedCount === 0) showToast("Preset loaded (no matching joints)", 2000);
+    else showToast(`Preset loaded (${appliedCount} joints)`);
+  }
+
+  return appliedCount;
+}
+
+/* ---------------- Import Pack (multi json) ---------------- */
+/**
+ * files: FileList or File[]
+ * deps:
+ *  - applyPose(data) : should apply pose in the scene
+ *  - saveToGallery({name, withToast}) : your gallery save method
+ *  - renderGallery() : optional
+ *  - showToast(msg)
+ */
+export async function importPosePack(files, deps = {}) {
+  const { applyPose: applyPoseFn, saveToGallery, renderGallery, showToast } = deps;
+
+  if (!files || !files.length) return;
+  let imported = 0;
+
+  for (const file of files) {
+    if (!file?.name?.toLowerCase().endsWith(".json")) continue;
+
+    try {
+      const text = await file.text();
+      const data = JSON.parse(text);
+
+      if (typeof applyPoseFn === "function") {
+        applyPoseFn(data); // so the thumbnail matches this pose
+      }
+
+      const name = file.name.replace(/\.json$/i, "");
+
+      if (typeof saveToGallery === "function") {
+        saveToGallery({ name, withToast: false });
+      }
+
+      imported++;
+    } catch (err) {
+      console.warn("Failed to import pose:", file?.name, err);
+    }
+  }
+
+  if (typeof renderGallery === "function") renderGallery();
+
+  if (typeof showToast === "function") {
+    if (imported > 0) showToast(`Imported ${imported} pose${imported > 1 ? "s" : ""}`);
+    else showToast("No valid poses imported");
+  }
+
+  return imported;
+}
