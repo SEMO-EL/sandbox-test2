@@ -1,213 +1,141 @@
-// controls/Selection.js
-// Owns: picking + selection state, outline, focus camera, selection name UI, clear.
-// Does NOT duplicate other modules. Use from your main app/engine glue.
+// core/helpers.js
+// Small, dependency-free helpers used across the app.
+// Keep this file pure (no Three.js imports, no side-effects).
 
-import * as THREE from "three";
+/* ----------------------------- Type helpers ----------------------------- */
 
-export class SelectionController {
-  /**
-   * @param {{
-   *  canvas: HTMLCanvasElement,
-   *  camera: THREE.Camera,
-   *  scene: THREE.Scene,
-   *  orbit: any, // OrbitControls
-   *  gizmo: any, // TransformControls
-   *  world: { root: THREE.Object3D, joints: THREE.Object3D[], props: THREE.Object3D[] },
-   *  selectionNameInput?: HTMLInputElement,
-   *  btnFocus?: HTMLElement,
-   *  btnClear?: HTMLElement,
-   *  helpModal?: HTMLElement,
-   *  // state read
-   *  getMode?: ()=>string, // returns "rotate"|"move"|"orbit"
-   *  getShowOutline?: ()=>boolean,
-   *  // hooks
-   *  toast?: (msg:string, ms?:number)=>void,
-   * }} opts
-   */
-  constructor(opts) {
-    this.canvas = opts.canvas;
-    this.camera = opts.camera;
-    this.scene = opts.scene;
-    this.orbit = opts.orbit;
-    this.gizmo = opts.gizmo;
-    this.world = opts.world;
+export function isObject(v) {
+  return v !== null && typeof v === "object";
+}
 
-    this.ui = {
-      selectionName: opts.selectionNameInput || null,
-      btnFocus: opts.btnFocus || null,
-      btnClear: opts.btnClear || null,
-      helpModal: opts.helpModal || null
-    };
+export function isFunction(v) {
+  return typeof v === "function";
+}
 
-    this.getMode = typeof opts.getMode === "function" ? opts.getMode : () => "rotate";
-    this.getShowOutline = typeof opts.getShowOutline === "function" ? opts.getShowOutline : () => true;
+export function noop() {}
 
-    this.toast = typeof opts.toast === "function" ? opts.toast : null;
+export function assert(condition, message = "Assertion failed") {
+  if (!condition) throw new Error(String(message));
+}
 
-    this.selected = null;
+/* ----------------------------- Math helpers ----------------------------- */
 
-    this.raycaster = new THREE.Raycaster();
-    this.pointer = new THREE.Vector2();
+export function clamp(v, a, b) {
+  return Math.max(a, Math.min(b, v));
+}
 
-    // outline helper (same look as your current app.js)
-    this.outline = new THREE.BoxHelper(new THREE.Object3D(), 0x24d2ff);
-    this.outline.visible = false;
-    this.scene.add(this.outline);
+export function degToRad(d) {
+  return (Number(d) * Math.PI) / 180;
+}
 
-    this._onPointerDown = (e) => this.onPointerDown(e);
-    this._onKeyDown = (e) => this.onKeyDown(e);
+export function radToDeg(r) {
+  return (Number(r) * 180) / Math.PI;
+}
 
-    window.addEventListener("pointerdown", this._onPointerDown);
-    window.addEventListener("keydown", this._onKeyDown);
+/* ----------------------------- Time helpers ----------------------------- */
 
-    this.ui.btnFocus?.addEventListener("click", () => this.focusSelection());
-    this.ui.btnClear?.addEventListener("click", () => this.clearSelection());
+export function nowISO() {
+  return new Date().toISOString();
+}
 
-    this._syncUI();
-  }
+export function niceTime(iso) {
+  // cheap readable timestamp (no libs)
+  const d = new Date(iso);
+  if (Number.isNaN(d.getTime())) return "";
+  const yyyy = d.getFullYear();
+  const mm = String(d.getMonth() + 1).padStart(2, "0");
+  const dd = String(d.getDate()).padStart(2, "0");
+  const hh = String(d.getHours()).padStart(2, "0");
+  const mi = String(d.getMinutes()).padStart(2, "0");
+  return `${yyyy}-${mm}-${dd} ${hh}:${mi}`;
+}
 
-  destroy() {
-    window.removeEventListener("pointerdown", this._onPointerDown);
-    window.removeEventListener("keydown", this._onKeyDown);
-    // outline stays in scene unless you want to remove it
-  }
+/* ----------------------------- ID helpers ------------------------------ */
 
-  getSelected() {
-    return this.selected;
-  }
+export function uid() {
+  return `${Date.now()}_${Math.random().toString(16).slice(2)}`;
+}
 
-  setSelection(obj) {
-    this.selected = obj || null;
+/* ----------------------------- JSON helpers ---------------------------- */
 
-    if (!this.selected) {
-      this._syncUI();
-      this.gizmo?.detach?.();
-      this.outline.visible = false;
-      return;
-    }
-
-    this._syncUI();
-    this.gizmo?.attach?.(this.selected);
-    this.updateOutline();
-  }
-
-  clearSelection() {
-    this.selected = null;
-    this._syncUI();
-    this.gizmo?.detach?.();
-    this.outline.visible = false;
-    this._toast("Selection cleared");
-  }
-
-  updateOutline() {
-    if (!this.getShowOutline() || !this.selected) {
-      this.outline.visible = false;
-      return;
-    }
-    this.outline.setFromObject(this.selected);
-    this.outline.visible = true;
-  }
-
-  tick() {
-    // call per frame from render loop if you want outline to follow transforms
-    if (this.selected && this.getShowOutline()) {
-      this.outline.setFromObject(this.selected);
-      this.outline.visible = true;
-    } else {
-      this.outline.visible = false;
-    }
-  }
-
-  focusSelection() {
-    if (!this.selected) return;
-
-    const box = new THREE.Box3().setFromObject(this.selected);
-    const size = box.getSize(new THREE.Vector3()).length();
-    const center = box.getCenter(new THREE.Vector3());
-
-    const dist = this._clamp(size * 1.6, 1.8, 12);
-    const dir = new THREE.Vector3(1, 0.7, 1).normalize();
-
-    this.camera.position.copy(center.clone().add(dir.multiplyScalar(dist)));
-    this.orbit?.target?.copy?.(center);
-    this.orbit?.update?.();
-
-    this._toast("Focused");
-  }
-
-  onPointerDown(ev) {
-    // block selection when orbit mode is active
-    if (this.getMode() === "orbit") return;
-    // block selection if help modal is open
-    if (this.ui.helpModal && !this.ui.helpModal.classList.contains("hidden")) return;
-
-    const obj = this.pickFromPointer(ev);
-    if (obj) {
-      this.setSelection(obj);
-      this._toast(`Selected: ${obj.name || "object"}`);
-    }
-  }
-
-  onKeyDown(ev) {
-    // Escape is handled by your Help system too, but we keep selection behavior consistent:
-    if (ev.key === "Escape") {
-      // if modal open, don't fight it (caller likely closes it)
-      if (this.ui.helpModal && !this.ui.helpModal.classList.contains("hidden")) return;
-      this.clearSelection();
-      return;
-    }
-
-    // F to focus
-    if (ev.key.toLowerCase() === "f") {
-      this.focusSelection();
-    }
-  }
-
-  pickFromPointer(ev) {
-    const rect = this.canvas.getBoundingClientRect();
-    this.pointer.x = ((ev.clientX - rect.left) / rect.width) * 2 - 1;
-    this.pointer.y = -(((ev.clientY - rect.top) / rect.height) * 2 - 1);
-
-    this.raycaster.setFromCamera(this.pointer, this.camera);
-
-    const pickables = [];
-
-    // character pickables
-    this.world.root?.traverse?.((obj) => {
-      if (obj?.userData?.pickable) pickables.push(obj);
-    });
-
-    // props pickables
-    (this.world.props || []).forEach((p) => {
-      p?.traverse?.((obj) => {
-        if (obj?.userData?.pickable) pickables.push(obj);
-      });
-    });
-
-    const hits = this.raycaster.intersectObjects(pickables, true);
-    if (!hits.length) return null;
-
-    // climb to joint group or prop group (same logic as your app.js)
-    let o = hits[0].object;
-    while (o && o.parent) {
-      if (o.parent?.userData?.isJoint) return o.parent;
-      if (o.userData?.isProp) return o;
-      o = o.parent;
-    }
-    return hits[0].object;
-  }
-
-  _syncUI() {
-    if (!this.ui.selectionName) return;
-    this.ui.selectionName.value = this.selected ? (this.selected.name || "(unnamed)") : "None";
-  }
-
-  _toast(msg, ms = 1200) {
-    if (this.toast) this.toast(msg, ms);
-  }
-
-  _clamp(v, a, b) {
-    return Math.max(a, Math.min(b, v));
+export function safeJsonParse(text, fallback) {
+  try {
+    return JSON.parse(text);
+  } catch {
+    return fallback;
   }
 }
 
+export function safeJsonStringify(value, fallback = "null") {
+  try {
+    return JSON.stringify(value);
+  } catch {
+    return fallback;
+  }
+}
+
+/* ----------------------------- Storage helpers ------------------------- */
+
+export function storageGet(key, fallback) {
+  try {
+    const raw = localStorage.getItem(key);
+    if (raw == null) return fallback;
+    return safeJsonParse(raw, fallback);
+  } catch {
+    return fallback;
+  }
+}
+
+export function storageSet(key, value) {
+  try {
+    localStorage.setItem(key, JSON.stringify(value));
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+/* ----------------------------- DOM helpers ----------------------------- */
+
+export function $(id) {
+  return document.getElementById(id);
+}
+
+export function toggleClass(el, className, on) {
+  if (!el) return;
+  el.classList.toggle(className, !!on);
+}
+
+/**
+ * Creates a toast function bound to a DOM element.
+ * Usage:
+ *   const toast = makeToast(document.getElementById("toast"));
+ *   toast("Hello");
+ */
+export function makeToast(toastEl) {
+  let t = 0;
+
+  return function toast(msg, ms = 1400) {
+    if (!toastEl) return;
+    toastEl.textContent = String(msg ?? "");
+    toastEl.classList.add("show");
+    window.clearTimeout(t);
+    t = window.setTimeout(() => toastEl.classList.remove("show"), ms);
+  };
+}
+
+/* ----------------------------- Misc helpers ---------------------------- */
+
+export function pick(obj, keys) {
+  const out = {};
+  if (!isObject(obj) || !Array.isArray(keys)) return out;
+  for (const k of keys) {
+    if (k in obj) out[k] = obj[k];
+  }
+  return out;
+}
+
+export function shallowCopy(obj) {
+  if (!isObject(obj)) return obj;
+  return Array.isArray(obj) ? obj.slice() : { ...obj };
+}
