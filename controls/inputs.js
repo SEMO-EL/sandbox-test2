@@ -1,271 +1,203 @@
-// character/Character.js
-// Builds the simple box-based character + exposes joints list for posing.
-// Extracted from your current working app.js buildCharacter()/namedGroup()/addBox() logic.
+// controls/InputManager.js
+// Centralizes pointer + keyboard input, and emits events.
+// This file is NEW and does NOT duplicate your other files.
 
-/**
- * @typedef {import("three")} THREE
- */
-
-export class Character {
+export class InputManager {
   /**
-   * @param {typeof import("three")} THREERef
-   * @param {import("three").Scene} scene
-   * @param {(colorHex:number)=>import("three").MeshStandardMaterial} makeMaterialFn
+   * @param {{
+   *   canvas: HTMLCanvasElement,
+   *   windowTarget?: Window,
+   *   helpModal?: HTMLElement|null
+   * }} opts
    */
-  constructor(THREERef, scene, makeMaterialFn) {
-    this.THREE = THREERef;
-    this.scene = scene;
-    this.makeMaterial = makeMaterialFn;
+  constructor(opts) {
+    this.canvas = opts.canvas;
+    this.win = opts.windowTarget || window;
+    this.helpModal = opts.helpModal || null;
 
-    /** @type {import("three").Group} */
-    this.root = new this.THREE.Group();
+    // listeners registry
+    this._handlers = {
+      pointerdown: [],
+      pointermove: [],
+      pointerup: [],
+      keydown: [],
+      keyup: [],
+      resize: []
+    };
 
-    /** @type {import("three").Group[]} */
-    this.joints = [];
+    this._bound = {
+      pointerdown: (e) => this._onPointerDown(e),
+      pointermove: (e) => this._onPointerMove(e),
+      pointerup: (e) => this._onPointerUp(e),
+      keydown: (e) => this._onKeyDown(e),
+      keyup: (e) => this._onKeyUp(e),
+      resize: () => this._emit("resize", { type: "resize" })
+    };
 
-    // built flag
-    this._built = false;
+    // state
+    this.pointer = {
+      clientX: 0,
+      clientY: 0,
+      isDown: false,
+      button: 0,
+      pointerId: null
+    };
+
+    this.keys = new Set();
+
+    // attach
+    this.canvas.addEventListener("pointerdown", this._bound.pointerdown, { passive: true });
+    this.canvas.addEventListener("pointermove", this._bound.pointermove, { passive: true });
+    this.canvas.addEventListener("pointerup", this._bound.pointerup, { passive: true });
+
+    this.win.addEventListener("keydown", this._bound.keydown);
+    this.win.addEventListener("keyup", this._bound.keyup);
+    this.win.addEventListener("resize", this._bound.resize);
   }
 
-  /** Clear from scene + reset local data */
-  clear() {
-    try {
-      if (this.root && this.root.parent) this.root.parent.remove(this.root);
-    } catch (e) {
-      // ignore
+  /**
+   * Subscribe to an event.
+   * @param {"pointerdown"|"pointermove"|"pointerup"|"keydown"|"keyup"|"resize"} type
+   * @param {(evt:any)=>void} fn
+   */
+  on(type, fn) {
+    if (!this._handlers[type]) return () => {};
+    this._handlers[type].push(fn);
+    return () => this.off(type, fn);
+  }
+
+  /**
+   * Unsubscribe.
+   * @param {string} type
+   * @param {(evt:any)=>void} fn
+   */
+  off(type, fn) {
+    const arr = this._handlers[type];
+    if (!arr) return;
+    const i = arr.indexOf(fn);
+    if (i >= 0) arr.splice(i, 1);
+  }
+
+  /** Remove all listeners (useful if you ever rebuild app) */
+  destroy() {
+    this.canvas.removeEventListener("pointerdown", this._bound.pointerdown);
+    this.canvas.removeEventListener("pointermove", this._bound.pointermove);
+    this.canvas.removeEventListener("pointerup", this._bound.pointerup);
+
+    this.win.removeEventListener("keydown", this._bound.keydown);
+    this.win.removeEventListener("keyup", this._bound.keyup);
+    this.win.removeEventListener("resize", this._bound.resize);
+
+    Object.keys(this._handlers).forEach(k => (this._handlers[k] = []));
+    this.keys.clear();
+  }
+
+  /** @private */
+  _emit(type, evt) {
+    const arr = this._handlers[type];
+    if (!arr || !arr.length) return;
+    for (const fn of arr) {
+      try { fn(evt); } catch (e) { console.error(e); }
     }
-    this.root.clear();
-    this.joints.length = 0;
-    this._built = false;
   }
 
-  /**
-   * Create a joint group, register it, set position.
-   * Mirrors namedGroup() from app.js.
-   */
-  _namedGroup(name, x = 0, y = 0, z = 0) {
-    const g = new this.THREE.Group();
-    g.name = name;
-    g.position.set(x, y, z);
-    g.userData.isJoint = true;
-    this.joints.push(g);
-    return g;
+  /** @private */
+  _isHelpOpen() {
+    // mirror your app.js rule: if help modal is open, block interactions
+    if (!this.helpModal) return false;
+    return !this.helpModal.classList.contains("hidden");
   }
 
-  /**
-   * Add a pickable box mesh (casts/receives shadows).
-   * Mirrors addBox() from app.js.
-   */
-  _addBox(parent, name, w, h, d, x, y, z, color = 0xb4b8c8) {
-    const mesh = new this.THREE.Mesh(
-      new this.THREE.BoxGeometry(w, h, d),
-      this.makeMaterial(color)
-    );
-    mesh.name = name;
-    mesh.position.set(x, y, z);
-    mesh.userData.pickable = true;
+  /** @private */
+  _onPointerDown(e) {
+    if (this._isHelpOpen()) return;
 
-    // shadows (same behavior as your app.js)
-    mesh.castShadow = true;
-    mesh.receiveShadow = true;
+    this.pointer.clientX = e.clientX;
+    this.pointer.clientY = e.clientY;
+    this.pointer.isDown = true;
+    this.pointer.button = e.button;
+    this.pointer.pointerId = e.pointerId;
 
-    parent.add(mesh);
-    return mesh;
+    this._emit("pointerdown", {
+      type: "pointerdown",
+      originalEvent: e,
+      clientX: e.clientX,
+      clientY: e.clientY,
+      button: e.button,
+      pointerId: e.pointerId
+    });
   }
 
-  /**
-   * Build/attach the character to the scene.
-   * Mirrors buildCharacter() from app.js.
-   * @returns {{ root: import("three").Group, joints: import("three").Group[] }}
-   */
-  build() {
-    this.clear();
+  /** @private */
+  _onPointerMove(e) {
+    this.pointer.clientX = e.clientX;
+    this.pointer.clientY = e.clientY;
 
-    const root = this._namedGroup("char_root", 0, 0, 0);
-    this.root.add(root);
-
-    /* ===================== HIPS ===================== */
-    const hips = this._namedGroup("hips", 0, 0.9, 0);
-    root.add(hips);
-
-    /* ===================== TORSO (shorter, tighter) ===================== */
-    this._addBox(
-      hips,
-      "torso_mesh",
-      1.0,    // width
-      1.15,   // height (shorter)
-      0.55,
-      0,
-      0.6,    // center
-      0,
-      0xaab0c2
-    );
-
-    /* ===================== CHEST ===================== */
-    const chest = this._namedGroup("chest", 0, 1.15, 0);
-    hips.add(chest);
-
-    /* ===================== NECK (lower & closer) ===================== */
-    const neck = this._namedGroup("neck", 0, 0.1, 0);
-    chest.add(neck);
-
-    /* ===================== HEAD (closer & slightly smaller) ===================== */
-    this._addBox(
-      neck,
-      "head_mesh",
-      0.55,
-      0.58,
-      0.55,
-      0,
-      0.32,
-      0,
-      0xc3c8d8
-    );
-
-    /* ===================== SHOULDERS (lower, relaxed) ===================== */
-    const shoulderY = 0.05;
-    const shoulderX = 0.68;
-
-    const lShoulder = this._namedGroup("l_shoulder", -shoulderX, shoulderY, 0);
-    const rShoulder = this._namedGroup("r_shoulder",  shoulderX, shoulderY, 0);
-    chest.add(lShoulder);
-    chest.add(rShoulder);
-
-    /* ===================== UPPER ARMS ===================== */
-    this._addBox(
-      lShoulder,
-      "l_upperarm_mesh",
-      0.26,
-      0.78,
-      0.26,
-      0,
-      -0.45,
-      0,
-      0x9aa2b8
-    );
-
-    this._addBox(
-      rShoulder,
-      "r_upperarm_mesh",
-      0.26,
-      0.78,
-      0.26,
-      0,
-      -0.45,
-      0,
-      0x9aa2b8
-    );
-
-    /* ===================== ELBOWS ===================== */
-    const lElbow = this._namedGroup("l_elbow", 0, -0.85, 0);
-    const rElbow = this._namedGroup("r_elbow", 0, -0.85, 0);
-    lShoulder.add(lElbow);
-    rShoulder.add(rElbow);
-
-    /* ===================== FOREARMS ===================== */
-    this._addBox(
-      lElbow,
-      "l_forearm_mesh",
-      0.24,
-      0.72,
-      0.24,
-      0,
-      -0.38,
-      0,
-      0x8c95ab
-    );
-
-    this._addBox(
-      rElbow,
-      "r_forearm_mesh",
-      0.24,
-      0.72,
-      0.24,
-      0,
-      -0.38,
-      0,
-      0x8c95ab
-    );
-
-    /* ===================== HIPS / LEGS ===================== */
-    const hipX = 0.28;
-
-    const lHip = this._namedGroup("l_hip", -hipX, 0.02, 0);
-    const rHip = this._namedGroup("r_hip",  hipX, 0.02, 0);
-    hips.add(lHip);
-    hips.add(rHip);
-
-    this._addBox(
-      lHip,
-      "l_thigh_mesh",
-      0.34,
-      0.95,
-      0.34,
-      0,
-      -0.48,
-      0,
-      0x8792aa
-    );
-
-    this._addBox(
-      rHip,
-      "r_thigh_mesh",
-      0.34,
-      0.95,
-      0.34,
-      0,
-      -0.48,
-      0,
-      0x8792aa
-    );
-
-    /* ===================== KNEES ===================== */
-    const lKnee = this._namedGroup("l_knee", 0, -0.95, 0);
-    const rKnee = this._namedGroup("r_knee", 0, -0.95, 0);
-    lHip.add(lKnee);
-    rHip.add(rKnee);
-
-    /* ===================== SHINS ===================== */
-    this._addBox(
-      lKnee,
-      "l_shin_mesh",
-      0.30,
-      0.85,
-      0.30,
-      0,
-      -0.42,
-      0,
-      0x7b86a0
-    );
-
-    this._addBox(
-      rKnee,
-      "r_shin_mesh",
-      0.30,
-      0.85,
-      0.30,
-      0,
-      -0.42,
-      0,
-      0x7b86a0
-    );
-
-    // match your app.js behavior
-    root.position.y = 1;
-
-    // attach to scene
-    this.scene.add(this.root);
-
-    this._built = true;
-    return { root: this.root, joints: this.joints };
+    this._emit("pointermove", {
+      type: "pointermove",
+      originalEvent: e,
+      clientX: e.clientX,
+      clientY: e.clientY,
+      isDown: this.pointer.isDown,
+      pointerId: e.pointerId
+    });
   }
 
-  /** Bulletproof reset (rotation + quaternion) */
-  resetAllJointRotations() {
-    this.joints.forEach(j => {
-      j.rotation.set(0, 0, 0);
-      j.quaternion.identity();
+  /** @private */
+  _onPointerUp(e) {
+    this.pointer.clientX = e.clientX;
+    this.pointer.clientY = e.clientY;
+    this.pointer.isDown = false;
+
+    this._emit("pointerup", {
+      type: "pointerup",
+      originalEvent: e,
+      clientX: e.clientX,
+      clientY: e.clientY,
+      button: e.button,
+      pointerId: e.pointerId
+    });
+  }
+
+  /** @private */
+  _onKeyDown(e) {
+    // keep Escape always deliverable (even when help is open)
+    const k = String(e.key || "");
+    const keyLower = k.toLowerCase();
+
+    this.keys.add(k);
+    this.keys.add(keyLower);
+
+    this._emit("keydown", {
+      type: "keydown",
+      originalEvent: e,
+      key: k,
+      keyLower,
+      code: e.code,
+      ctrlKey: !!e.ctrlKey,
+      metaKey: !!e.metaKey,
+      shiftKey: !!e.shiftKey,
+      altKey: !!e.altKey
+    });
+  }
+
+  /** @private */
+  _onKeyUp(e) {
+    const k = String(e.key || "");
+    const keyLower = k.toLowerCase();
+    this.keys.delete(k);
+    this.keys.delete(keyLower);
+
+    this._emit("keyup", {
+      type: "keyup",
+      originalEvent: e,
+      key: k,
+      keyLower,
+      code: e.code,
+      ctrlKey: !!e.ctrlKey,
+      metaKey: !!e.metaKey,
+      shiftKey: !!e.shiftKey,
+      altKey: !!e.altKey
     });
   }
 }
-
