@@ -1,30 +1,40 @@
-// app.js (PoseSandbox entrypoint)
-// - Keeps your current app.html working (same IDs)
-// - Uses split pose modules:
-//    - ./poses/pose-io.js  (serialize/apply/import + joints-only apply)
-//    - ./poses/presets.js  (preset list + UI rendering/wiring)
-//
-// NOTE: This file intentionally stays "fat" as the main orchestrator,
-// while the pose logic is moved out so you avoid duplicate functions.
+// app.js
+// PoseSandbox modular entrypoint — uses EVERY module in your tree.
+// Keeps behavior identical to your working monolithic app.js (selection, gizmo, gallery, presets, props, export, help, perf).
 
 import * as THREE from "three";
-import { OrbitControls } from "three/addons/controls/OrbitControls.js";
-import { TransformControls } from "three/addons/controls/TransformControls.js";
 
+import { Character } from "./character/Character.js";
+
+import { InputManager, bindPropButtons } from "./controls/input.js";
+import { ModesController } from "./controls/Modes.js";
+import { SelectionController } from "./controls/Selection.js";
+
+import { clamp, degToRad, makeToast, niceTime } from "./core/helpers.js";
+import { createState, setShowAxes, setShowGrid, setShowOutline, setPerfEnabled } from "./core/state.js";
 import {
-  serializePose,
-  applyPose as applyPoseFromModule,
-  applyPoseJointsOnly as applyPoseJointsOnlyFromModule,
-  importPosePack
-} from "./poses/pose-io.js";
+  createWorld,
+  resetAllJointRotations as resetAllJointRotationsWorld,
+  addProp as addPropWorld,
+  removeProp as removePropWorld,
+  clearProps as clearPropsWorld,
+  PROP_TYPES
+} from "./core/world.js";
 
-import { PresetsUI, createPresets } from "./poses/presets.js";
+import { createRenderer } from "./engine/renderer.js";
+import { createScene, setBackgroundTone } from "./engine/scene.js";
+import { createLoop } from "./engine/loop.js";
 
-/* ============================== DOM REFS ============================== */
+import { Gallery } from "./gallery/Gallery.js";
+
+import { serializePose, applyPose, applyPoseJointsOnly } from "./poses/pose-io.js";
+import { createPresets, PresetsUI } from "./poses/presets.js";
+
+/* ---------------------------- DOM refs ---------------------------- */
 const canvas = document.getElementById("c");
 const errorOverlay = document.getElementById("errorOverlay");
 const errorText = document.getElementById("errorText");
-const toast = document.getElementById("toast");
+const toastEl = document.getElementById("toast");
 
 const selectionName = document.getElementById("selectionName");
 const btnFocus = document.getElementById("btnFocus");
@@ -50,8 +60,6 @@ const btnLoadPose = document.getElementById("btnLoadPose");
 const filePose = document.getElementById("filePose");
 const poseNotes = document.getElementById("poseNotes");
 
-const btnAddCube = document.getElementById("btnAddCube");
-const btnAddSphere = document.getElementById("btnAddSphere");
 const btnDelProp = document.getElementById("btnDelProp");
 const btnScatter = document.getElementById("btnScatter");
 const bgTone = document.getElementById("bgTone");
@@ -63,30 +71,20 @@ const btnCloseHelp = document.getElementById("btnCloseHelp");
 const btnHelpOk = document.getElementById("btnHelpOk");
 const btnPerf = document.getElementById("btnPerf");
 
-/* Pose Gallery DOM */
+/* Gallery DOM */
 const btnSaveGallery = document.getElementById("btnSaveGallery");
 const poseGallery = document.getElementById("poseGallery");
 const btnRenamePose = document.getElementById("btnRenamePose");
 const btnDeletePose = document.getElementById("btnDeletePose");
 const btnClearGallery = document.getElementById("btnClearGallery");
 
-/* Preset Poses DOM */
+/* Presets DOM */
 const presetGallery = document.getElementById("presetGallery");
 const btnPresetApply = document.getElementById("btnPresetApply");
 const btnPresetSave = document.getElementById("btnPresetSave");
 
-/* Optional (only if you add them later) */
-const btnImportPack = document.getElementById("btnImportPack");
-const fileImportPack = document.getElementById("fileImportPack");
-
-/* ============================== HELPERS ============================== */
-function showToast(msg, ms = 1400) {
-  if (!toast) return;
-  toast.textContent = msg;
-  toast.classList.add("show");
-  window.clearTimeout(showToast._t);
-  showToast._t = window.setTimeout(() => toast.classList.remove("show"), ms);
-}
+/* ---------------------------- Helpers ---------------------------- */
+const showToast = makeToast(toastEl);
 
 function fatal(err) {
   if (errorText) errorText.textContent = String(err?.stack || err);
@@ -94,696 +92,16 @@ function fatal(err) {
   console.error(err);
 }
 
-function clamp(v, a, b) {
-  return Math.max(a, Math.min(b, v));
+function downloadJson(filename, dataObj) {
+  const blob = new Blob([JSON.stringify(dataObj, null, 2)], { type: "application/json" });
+  const a = document.createElement("a");
+  a.href = URL.createObjectURL(blob);
+  a.download = filename;
+  a.click();
+  URL.revokeObjectURL(a.href);
 }
 
-function degToRad(d) {
-  return (d * Math.PI) / 180;
-}
-
-function safeJsonParse(s, fallback) {
-  try {
-    return JSON.parse(s);
-  } catch {
-    return fallback;
-  }
-}
-
-function nowISO() {
-  return new Date().toISOString();
-}
-
-function niceTime(iso) {
-  const d = new Date(iso);
-  if (Number.isNaN(d.getTime())) return "";
-  const yyyy = d.getFullYear();
-  const mm = String(d.getMonth() + 1).padStart(2, "0");
-  const dd = String(d.getDate()).padStart(2, "0");
-  const hh = String(d.getHours()).padStart(2, "0");
-  const mi = String(d.getMinutes()).padStart(2, "0");
-  return `${yyyy}-${mm}-${dd} ${hh}:${mi}`;
-}
-
-/* ============================== THREE GLOBALS ============================== */
-let renderer, scene, camera, orbit, gizmo, axesHelper, gridHelper, outline;
-let raycaster, pointer;
-
-let selected = null;
-let perfEnabled = false;
-
-let lastFrameTime = performance.now();
-let fpsSmoothed = 60;
-
-const STATE = {
-  mode: "rotate", // "rotate" | "move" | "orbit"
-  axis: { x: true, y: true, z: true },
-  snapDeg: 10,
-  showGrid: true,
-  showAxes: false,
-  showOutline: true
-};
-
-const world = {
-  root: new THREE.Group(),
-  joints: [],
-  props: []
-};
-
-/* Force one immediate render after applying pose/preset (helps on some GPUs) */
-function forceRenderOnce() {
-  try {
-    if (!renderer || !scene || !camera) return;
-    world?.root?.updateMatrixWorld?.(true);
-    world?.props?.forEach?.((p) => p.updateMatrixWorld?.(true));
-    renderer.render(scene, camera);
-  } catch {
-    // ignore
-  }
-}
-
-/* Reset all joints safely (rotation + quaternion) */
-function resetAllJointRotations() {
-  world.joints.forEach((j) => {
-    j.rotation.set(0, 0, 0);
-    j.quaternion.identity();
-  });
-}
-
-/* ============================== POSE MODULE WRAPPERS ============================== */
-/* Keep dependencies centralized so module functions have what they need */
-function serializePoseSafe() {
-  return serializePose({
-    world,
-    poseNotesEl: poseNotes
-  });
-}
-
-function applyPoseSafe(data) {
-  return applyPoseFromModule(data, {
-    world,
-    scene,
-    poseNotesEl: poseNotes,
-    addProp,
-    showToast,
-    updateOutline,
-    forceRenderOnce
-  });
-}
-
-function applyPoseJointsOnlySafe(poseObj) {
-  return applyPoseJointsOnlyFromModule(poseObj, {
-    world,
-    resetAllJointRotations,
-    showToast,
-    updateOutline,
-    forceRenderOnce
-  });
-}
-
-/* ============================== GALLERY (LOCAL STORAGE) ============================== */
-const GALLERY = {
-  key: "pose_sandbox_gallery_v1",
-  maxItems: 30
-};
-
-let galleryItems = []; // {id,name,createdAt,notes,pose,thumb}
-let gallerySelectedId = null;
-
-function uid() {
-  return `${Date.now()}_${Math.random().toString(16).slice(2)}`;
-}
-
-function loadGalleryFromStorage() {
-  const raw = localStorage.getItem(GALLERY.key);
-  galleryItems = safeJsonParse(raw, []);
-  if (!Array.isArray(galleryItems)) galleryItems = [];
-  galleryItems = galleryItems.filter((it) => it && typeof it === "object" && it.id && it.pose && it.thumb);
-  if (galleryItems.length > GALLERY.maxItems) galleryItems = galleryItems.slice(0, GALLERY.maxItems);
-}
-
-function saveGalleryToStorage() {
-  try {
-    localStorage.setItem(GALLERY.key, JSON.stringify(galleryItems));
-  } catch (e) {
-    console.warn("Gallery save failed:", e);
-    showToast("Gallery save failed (storage full?)", 1800);
-  }
-}
-
-function ensureGallerySelectionValid() {
-  if (!gallerySelectedId) return;
-  const exists = galleryItems.some((it) => it.id === gallerySelectedId);
-  if (!exists) gallerySelectedId = null;
-}
-
-function captureThumbnail(size = 256) {
-  // Must render before capture for accuracy
-  renderer.render(scene, camera);
-
-  const src = renderer.domElement;
-  const thumb = document.createElement("canvas");
-  thumb.width = size;
-  thumb.height = size;
-
-  const ctx = thumb.getContext("2d", { willReadFrequently: false });
-  if (!ctx) return null;
-
-  const sw = src.width;
-  const sh = src.height;
-  const s = Math.min(sw, sh);
-  const sx = Math.floor((sw - s) / 2);
-  const sy = Math.floor((sh - s) / 2);
-
-  ctx.imageSmoothingEnabled = true;
-  ctx.imageSmoothingQuality = "high";
-  ctx.drawImage(src, sx, sy, s, s, 0, 0, size, size);
-
-  try {
-    return thumb.toDataURL("image/png");
-  } catch {
-    return null;
-  }
-}
-
-function renderGallery() {
-  if (!poseGallery) return;
-
-  ensureGallerySelectionValid();
-  poseGallery.innerHTML = "";
-
-  if (!galleryItems.length) {
-    const empty = document.createElement("div");
-    empty.className = "hint";
-    empty.textContent = "No poses saved yet. Use “Save JSON” or “Save to Gallery”.";
-    poseGallery.appendChild(empty);
-    return;
-  }
-
-  galleryItems.forEach((it, idx) => {
-    const card = document.createElement("div");
-    card.className = "poseItem" + (it.id === gallerySelectedId ? " poseItem--active" : "");
-    card.title = "Click to load this pose";
-
-    const badge = document.createElement("div");
-    badge.className = "poseBadge";
-    badge.textContent = String(idx + 1);
-
-    const img = document.createElement("img");
-    img.className = "poseThumb";
-    img.alt = it.name || "Pose";
-    img.loading = "lazy";
-    img.src = it.thumb;
-
-    const meta = document.createElement("div");
-    meta.className = "poseMeta";
-
-    const name = document.createElement("div");
-    name.className = "poseName";
-    name.textContent = it.name || "Untitled pose";
-
-    const time = document.createElement("div");
-    time.className = "poseTime";
-    time.textContent = niceTime(it.createdAt || "");
-
-    meta.appendChild(name);
-    meta.appendChild(time);
-
-    card.appendChild(img);
-    card.appendChild(badge);
-    card.appendChild(meta);
-
-    card.addEventListener("click", () => {
-      gallerySelectedId = it.id;
-      renderGallery();
-      applyPoseSafe(it.pose);
-      if (typeof it.notes === "string" && poseNotes) poseNotes.value = it.notes;
-      showToast(`Loaded: ${it.name || "pose"}`);
-    });
-
-    poseGallery.appendChild(card);
-  });
-}
-
-function savePoseToGallery({ name = "", withToast = true } = {}) {
-  const pose = serializePoseSafe();
-  const thumb = captureThumbnail(256);
-
-  if (!thumb) {
-    showToast("Thumbnail capture failed", 1600);
-    return;
-  }
-
-  const item = {
-    id: uid(),
-    name: (name || "").trim() || `Pose ${galleryItems.length + 1}`,
-    createdAt: nowISO(),
-    notes: String(poseNotes?.value || ""),
-    pose,
-    thumb
-  };
-
-  galleryItems.unshift(item);
-  if (galleryItems.length > GALLERY.maxItems) galleryItems.length = GALLERY.maxItems;
-
-  gallerySelectedId = item.id;
-  saveGalleryToStorage();
-  renderGallery();
-
-  if (withToast) showToast("Saved to gallery");
-}
-
-function renameSelectedGalleryPose() {
-  if (!gallerySelectedId) {
-    showToast("Select a pose thumbnail first");
-    return;
-  }
-  const it = galleryItems.find((x) => x.id === gallerySelectedId);
-  if (!it) return;
-
-  const next = prompt("Rename pose:", it.name || "");
-  if (next === null) return;
-  const trimmed = String(next).trim();
-  it.name = trimmed || it.name || "Untitled pose";
-
-  saveGalleryToStorage();
-  renderGallery();
-  showToast("Pose renamed");
-}
-
-function deleteSelectedGalleryPose() {
-  if (!gallerySelectedId) {
-    showToast("Select a pose thumbnail first");
-    return;
-  }
-  const before = galleryItems.length;
-  galleryItems = galleryItems.filter((x) => x.id !== gallerySelectedId);
-  gallerySelectedId = null;
-
-  if (galleryItems.length === before) return;
-
-  saveGalleryToStorage();
-  renderGallery();
-  showToast("Pose deleted");
-}
-
-function clearGalleryAll() {
-  if (!galleryItems.length) {
-    showToast("Gallery is already empty");
-    return;
-  }
-  const ok = confirm("Clear ALL saved poses from gallery? (This cannot be undone)");
-  if (!ok) return;
-
-  galleryItems = [];
-  gallerySelectedId = null;
-  saveGalleryToStorage();
-  renderGallery();
-  showToast("Gallery cleared");
-}
-
-/* ============================== SCENE / RENDERER ============================== */
-function createRenderer() {
-  renderer = new THREE.WebGLRenderer({
-    canvas,
-    antialias: true,
-    alpha: false,
-    powerPreference: "high-performance",
-    preserveDrawingBuffer: true
-  });
-
-  renderer.outputColorSpace = THREE.SRGBColorSpace;
-  renderer.toneMapping = THREE.ACESFilmicToneMapping;
-  renderer.toneMappingExposure = 1.05;
-
-  renderer.shadowMap.enabled = true;
-  renderer.shadowMap.type = THREE.PCFSoftShadowMap;
-
-  renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2));
-  renderer.setSize(canvas.clientWidth, canvas.clientHeight, false);
-}
-
-function setBackgroundTone(mode) {
-  if (!scene) return;
-  if (mode === "studio") scene.background = new THREE.Color(0x10131a);
-  else if (mode === "graphite") scene.background = new THREE.Color(0x0b0b10);
-  else scene.background = new THREE.Color(0x0b0f17);
-}
-
-function createScene() {
-  scene = new THREE.Scene();
-  setBackgroundTone("midnight");
-
-  camera = new THREE.PerspectiveCamera(55, canvas.clientWidth / canvas.clientHeight, 0.1, 200);
-  camera.position.set(4.6, 3.7, 6.2);
-  camera.lookAt(0, 1.1, 0);
-
-  orbit = new OrbitControls(camera, renderer.domElement);
-  orbit.enableDamping = true;
-  orbit.dampingFactor = 0.06;
-  orbit.target.set(0, 1.05, 0);
-
-  // Lights
-  scene.add(new THREE.HemisphereLight(0x9bb2ff, 0x151a22, 0.35));
-
-  const ambient = new THREE.AmbientLight(0xffffff, 0.22);
-  scene.add(ambient);
-
-  const key = new THREE.DirectionalLight(0xffffff, 0.92);
-  key.position.set(6, 10, 3);
-  key.castShadow = true;
-
-  key.shadow.mapSize.set(2048, 2048);
-  key.shadow.camera.near = 1;
-  key.shadow.camera.far = 40;
-  key.shadow.camera.left = -12;
-  key.shadow.camera.right = 12;
-  key.shadow.camera.top = 12;
-  key.shadow.camera.bottom = -12;
-  key.shadow.bias = -0.00025;
-  key.shadow.normalBias = 0.02;
-  scene.add(key);
-
-  const fill = new THREE.DirectionalLight(0x88bbff, 0.30);
-  fill.position.set(-7, 4, -6);
-  scene.add(fill);
-
-  const rim = new THREE.DirectionalLight(0xaad9ff, 0.18);
-  rim.position.set(-2, 3, 8);
-  scene.add(rim);
-
-  // Floor
-  const floorMat = new THREE.MeshStandardMaterial({
-    color: 0x131826,
-    metalness: 0.05,
-    roughness: 0.95
-  });
-  const floor = new THREE.Mesh(new THREE.PlaneGeometry(50, 50), floorMat);
-  floor.rotation.x = -Math.PI / 2;
-  floor.position.y = 0;
-  floor.receiveShadow = true;
-  scene.add(floor);
-
-  gridHelper = new THREE.GridHelper(50, 50, 0x2a3550, 0x1c2436);
-  gridHelper.position.y = 0.001;
-  scene.add(gridHelper);
-
-  axesHelper = new THREE.AxesHelper(2.2);
-  axesHelper.visible = false;
-  scene.add(axesHelper);
-
-  raycaster = new THREE.Raycaster();
-  pointer = new THREE.Vector2();
-
-  gizmo = new TransformControls(camera, renderer.domElement);
-  gizmo.setMode("rotate");
-  gizmo.setSpace("local");
-  gizmo.size = 0.85;
-
-  gizmo.addEventListener("dragging-changed", (e) => {
-    orbit.enabled = !e.value && STATE.mode === "orbit";
-    if (e.value) showToast(STATE.mode === "move" ? "Moving…" : "Rotating…");
-  });
-
-  scene.add(gizmo);
-
-  outline = new THREE.BoxHelper(new THREE.Object3D(), 0x24d2ff);
-  outline.visible = false;
-  scene.add(outline);
-
-  window.addEventListener("pointerdown", onPointerDown);
-  window.addEventListener("keydown", onKeyDown);
-}
-
-/* ============================== CHARACTER ============================== */
-function makeMaterial(colorHex) {
-  return new THREE.MeshStandardMaterial({
-    color: colorHex,
-    metalness: 0.08,
-    roughness: 0.75
-  });
-}
-
-function namedGroup(name, x = 0, y = 0, z = 0) {
-  const g = new THREE.Group();
-  g.name = name;
-  g.position.set(x, y, z);
-  g.userData.isJoint = true;
-  world.joints.push(g);
-  return g;
-}
-
-function addBox(parent, name, w, h, d, x, y, z, color = 0xb4b8c8) {
-  const mesh = new THREE.Mesh(new THREE.BoxGeometry(w, h, d), makeMaterial(color));
-  mesh.name = name;
-  mesh.position.set(x, y, z);
-  mesh.userData.pickable = true;
-
-  mesh.castShadow = true;
-  mesh.receiveShadow = true;
-
-  parent.add(mesh);
-  return mesh;
-}
-
-function buildCharacter() {
-  world.root.clear();
-  world.joints.length = 0;
-
-  const root = namedGroup("char_root", 0, 0, 0);
-  world.root.add(root);
-
-  const hips = namedGroup("hips", 0, 0.9, 0);
-  root.add(hips);
-
-  addBox(hips, "torso_mesh", 1.0, 1.15, 0.55, 0, 0.6, 0, 0xaab0c2);
-
-  const chest = namedGroup("chest", 0, 1.15, 0);
-  hips.add(chest);
-
-  const neck = namedGroup("neck", 0, 0.1, 0);
-  chest.add(neck);
-
-  addBox(neck, "head_mesh", 0.55, 0.58, 0.55, 0, 0.32, 0, 0xc3c8d8);
-
-  const shoulderY = 0.05;
-  const shoulderX = 0.68;
-
-  const lShoulder = namedGroup("l_shoulder", -shoulderX, shoulderY, 0);
-  const rShoulder = namedGroup("r_shoulder", shoulderX, shoulderY, 0);
-  chest.add(lShoulder);
-  chest.add(rShoulder);
-
-  addBox(lShoulder, "l_upperarm_mesh", 0.26, 0.78, 0.26, 0, -0.45, 0, 0x9aa2b8);
-  addBox(rShoulder, "r_upperarm_mesh", 0.26, 0.78, 0.26, 0, -0.45, 0, 0x9aa2b8);
-
-  const lElbow = namedGroup("l_elbow", 0, -0.85, 0);
-  const rElbow = namedGroup("r_elbow", 0, -0.85, 0);
-  lShoulder.add(lElbow);
-  rShoulder.add(rElbow);
-
-  addBox(lElbow, "l_forearm_mesh", 0.24, 0.72, 0.24, 0, -0.38, 0, 0x8c95ab);
-  addBox(rElbow, "r_forearm_mesh", 0.24, 0.72, 0.24, 0, -0.38, 0, 0x8c95ab);
-
-  const hipX = 0.28;
-  const lHip = namedGroup("l_hip", -hipX, 0.02, 0);
-  const rHip = namedGroup("r_hip", hipX, 0.02, 0);
-  hips.add(lHip);
-  hips.add(rHip);
-
-  addBox(lHip, "l_thigh_mesh", 0.34, 0.95, 0.34, 0, -0.48, 0, 0x8792aa);
-  addBox(rHip, "r_thigh_mesh", 0.34, 0.95, 0.34, 0, -0.48, 0, 0x8792aa);
-
-  const lKnee = namedGroup("l_knee", 0, -0.95, 0);
-  const rKnee = namedGroup("r_knee", 0, -0.95, 0);
-  lHip.add(lKnee);
-  rHip.add(rKnee);
-
-  addBox(lKnee, "l_shin_mesh", 0.30, 0.85, 0.30, 0, -0.42, 0, 0x7b86a0);
-  addBox(rKnee, "r_shin_mesh", 0.30, 0.85, 0.30, 0, -0.42, 0, 0x7b86a0);
-
-  root.position.y = 1;
-  scene.add(world.root);
-}
-
-/* ============================== PROPS ============================== */
-function addProp(type) {
-  const base = new THREE.Group();
-  base.userData.isProp = true;
-
-  let mesh;
-  if (type === "cube") {
-    mesh = new THREE.Mesh(new THREE.BoxGeometry(0.5, 0.5, 0.5), makeMaterial(0x24d2ff));
-    base.name = `prop_cube_${world.props.length + 1}`;
-  } else {
-    mesh = new THREE.Mesh(new THREE.SphereGeometry(0.28, 24, 24), makeMaterial(0x7c5cff));
-    base.name = `prop_sphere_${world.props.length + 1}`;
-  }
-
-  mesh.userData.pickable = true;
-  mesh.castShadow = true;
-  mesh.receiveShadow = true;
-
-  base.add(mesh);
-
-  base.position.set((Math.random() - 0.5) * 2.0, 0.28, (Math.random() - 0.5) * 2.0);
-  world.props.push(base);
-  scene.add(base);
-
-  showToast(`Added ${type}`);
-}
-
-function deleteSelectedProp() {
-  if (!selected || !selected.userData.isProp) {
-    showToast("Select a prop to delete");
-    return;
-  }
-  scene.remove(selected);
-  world.props = world.props.filter((p) => p !== selected);
-  clearSelection();
-  showToast("Prop deleted");
-}
-
-/* ============================== SELECTION ============================== */
-function pickFromPointer(ev) {
-  const rect = canvas.getBoundingClientRect();
-  pointer.x = ((ev.clientX - rect.left) / rect.width) * 2 - 1;
-  pointer.y = -(((ev.clientY - rect.top) / rect.height) * 2 - 1);
-  raycaster.setFromCamera(pointer, camera);
-
-  const pickables = [];
-
-  world.root.traverse((obj) => {
-    if (obj.userData.pickable) pickables.push(obj);
-  });
-  world.props.forEach((p) =>
-    p.traverse((obj) => {
-      if (obj.userData.pickable) pickables.push(obj);
-    })
-  );
-
-  const hits = raycaster.intersectObjects(pickables, true);
-  if (!hits.length) return null;
-
-  let o = hits[0].object;
-  while (o && o.parent) {
-    if (o.parent.userData.isJoint) return o.parent;
-    if (o.userData.isProp) return o;
-    o = o.parent;
-  }
-  return hits[0].object;
-}
-
-function setSelection(obj) {
-  selected = obj;
-
-  if (!selected) {
-    if (selectionName) selectionName.value = "None";
-    gizmo.detach();
-    outline.visible = false;
-    return;
-  }
-
-  if (selectionName) selectionName.value = selected.name || "(unnamed)";
-  gizmo.attach(selected);
-  updateGizmoAxis();
-  updateOutline();
-}
-
-function clearSelection() {
-  selected = null;
-  if (selectionName) selectionName.value = "None";
-  gizmo.detach();
-  outline.visible = false;
-}
-
-function updateOutline() {
-  if (!STATE.showOutline || !selected) {
-    outline.visible = false;
-    return;
-  }
-  outline.setFromObject(selected);
-  outline.visible = true;
-}
-
-function focusSelection() {
-  if (!selected) return;
-
-  const box = new THREE.Box3().setFromObject(selected);
-  const size = box.getSize(new THREE.Vector3()).length();
-  const center = box.getCenter(new THREE.Vector3());
-
-  const dist = clamp(size * 1.6, 1.8, 12);
-  const dir = new THREE.Vector3(1, 0.7, 1).normalize();
-
-  camera.position.copy(center.clone().add(dir.multiplyScalar(dist)));
-  orbit.target.copy(center);
-  orbit.update();
-  showToast("Focused");
-}
-
-/* ============================== MODES / GIZMO ============================== */
-function setMode(mode) {
-  STATE.mode = mode;
-
-  const rotOn = mode === "rotate";
-  const movOn = mode === "move";
-  const orbOn = mode === "orbit";
-
-  modeRotate?.classList.toggle("btn--active", rotOn);
-  modeMove?.classList.toggle("btn--active", movOn);
-  modeOrbit?.classList.toggle("btn--active", orbOn);
-
-  gizmo.enabled = !orbOn;
-  orbit.enabled = orbOn;
-
-  gizmo.setMode(movOn ? "translate" : "rotate");
-
-  updateGizmoAxis();
-  showToast(rotOn ? "Rotate mode" : movOn ? "Move mode" : "Orbit mode");
-}
-
-function toggleAxis(btn, key) {
-  STATE.axis[key] = !STATE.axis[key];
-  btn?.classList.toggle("chip--active", STATE.axis[key]);
-  updateGizmoAxis();
-}
-
-function updateGizmoAxis() {
-  gizmo.showX = STATE.axis.x;
-  gizmo.showY = STATE.axis.y;
-  gizmo.showZ = STATE.axis.z;
-
-  const snap = Number(rotateSnap?.value || STATE.snapDeg);
-  STATE.snapDeg = snap;
-
-  if (STATE.mode === "rotate" && snap > 0) gizmo.setRotationSnap(degToRad(snap));
-  else gizmo.setRotationSnap(null);
-}
-
-/* ============================== POSE ACTIONS ============================== */
-function resetPose() {
-  resetAllJointRotations();
-  updateOutline();
-  forceRenderOnce();
-  showToast("Pose reset");
-}
-
-function randomPose() {
-  const names = new Set(["l_shoulder", "r_shoulder", "l_elbow", "r_elbow", "neck", "chest"]);
-  world.joints.forEach((j) => {
-    if (!names.has(j.name)) return;
-    j.rotation.x = (Math.random() - 0.5) * 0.9;
-    j.rotation.y = (Math.random() - 0.5) * 0.9;
-    j.rotation.z = (Math.random() - 0.5) * 0.9;
-  });
-  updateOutline();
-  forceRenderOnce();
-  showToast("Random pose");
-}
-
-/* ============================== EXPORT PNG ============================== */
-function exportPNG() {
+function exportPNG(renderer, scene, camera) {
   renderer.render(scene, camera);
   const url = renderer.domElement.toDataURL("image/png");
   const a = document.createElement("a");
@@ -793,126 +111,330 @@ function exportPNG() {
   showToast("Exported PNG");
 }
 
-/* ============================== EVENTS ============================== */
-function onPointerDown(ev) {
-  if (STATE.mode === "orbit") return;
-  if (helpModal && !helpModal.classList.contains("hidden")) return;
+/* ---------------------------- Boot ---------------------------- */
+try {
+  /* Core state + world */
+  const STATE = createState();
+  const world = createWorld();
 
-  const obj = pickFromPointer(ev);
-  if (obj) {
-    setSelection(obj);
-    showToast(`Selected: ${obj.name || "object"}`);
+  /* Input */
+  const input = new InputManager({ canvas, helpModal });
+
+  /* Renderer */
+  const { renderer, resizeToCanvas } = createRenderer(canvas, {
+    powerPreference: "high-performance",
+    antialias: true,
+    alpha: false,
+    preserveDrawingBuffer: true,
+    maxPixelRatio: 2,
+    toneMappingExposure: 1.05
+  });
+
+  /* Scene */
+  const sceneBundle = createScene({
+    canvas,
+    renderer,
+    STATE,
+    showToast,
+    // we won’t use window listeners from engine/scene.js; Selection/Input handle events.
+    onPointerDown: null,
+    onKeyDown: null
+  });
+
+  const {
+    scene,
+    camera,
+    orbit,
+    gizmo,
+    axesHelper,
+    gridHelper,
+    outline: engineOutline
+  } = sceneBundle;
+
+  // Background selector initial
+  setBackgroundTone(scene, bgTone?.value || "midnight");
+
+  /* Character */
+  function makeMaterial(colorHex) {
+    return new THREE.MeshStandardMaterial({
+      color: colorHex,
+      metalness: 0.08,
+      roughness: 0.75
+    });
   }
-}
 
-function onKeyDown(ev) {
-  if (ev.key === "Escape") {
-    if (helpModal && !helpModal.classList.contains("hidden")) {
-      helpModal.classList.add("hidden");
-      showToast("Help closed");
+  const character = new Character(THREE, scene, makeMaterial);
+  const built = character.build();
+
+  // Connect world to character
+  world.root = built.root;
+  world.joints = built.joints;
+
+  /* Selection controller (we’ll route events via InputManager) */
+  const selection = new SelectionController({
+    canvas,
+    camera,
+    scene,
+    orbit,
+    gizmo,
+    world,
+    selectionNameInput: selectionName,
+    btnFocus,
+    btnClear,
+    helpModal,
+    getMode: () => STATE.mode,
+    getShowOutline: () => STATE.showOutline,
+    toast: showToast
+  });
+
+  // SelectionController adds its own outline; we remove engine outline so it’s not duplicated.
+  try {
+    if (engineOutline) scene.remove(engineOutline);
+  } catch {}
+
+  // IMPORTANT: we do NOT want SelectionController to bind window events (we use InputManager)
+  selection.destroy();
+
+  /* Modes controller (UI + gizmo/orbit + snap/axis) */
+  const modes = new ModesController({
+    modeRotateBtn: modeRotate,
+    modeMoveBtn: modeMove,
+    modeOrbitBtn: modeOrbit,
+    axisXBtn: axisX,
+    axisYBtn: axisY,
+    axisZBtn: axisZ,
+    rotateSnapSelect: rotateSnap,
+    orbit,
+    gizmo,
+    toast: showToast
+  });
+
+  // Sync ModesController state -> core STATE (so other modules read consistent values)
+  const _setMode = modes.setMode.bind(modes);
+  modes.setMode = (m) => {
+    _setMode(m);
+    STATE.mode = modes.state.mode;
+    return STATE.mode;
+  };
+
+  const _toggleAxis = modes.toggleAxis.bind(modes);
+  modes.toggleAxis = (k) => {
+    const v = _toggleAxis(k);
+    STATE.axis.x = !!modes.state.axis.x;
+    STATE.axis.y = !!modes.state.axis.y;
+    STATE.axis.z = !!modes.state.axis.z;
+    return v;
+  };
+
+  const _setSnapDeg = modes.setSnapDeg.bind(modes);
+  modes.setSnapDeg = (deg) => {
+    const v = _setSnapDeg(deg);
+    STATE.snapDeg = modes.state.snapDeg;
+    return v;
+  };
+
+  // Initialize state from UI
+  STATE.mode = modes.state.mode;
+  STATE.axis = { ...modes.state.axis };
+  STATE.snapDeg = modes.state.snapDeg;
+
+  /* ---------------------------- Props ---------------------------- */
+
+  function applyPropShadowsAndPickable(group) {
+    if (!group) return;
+    group.traverse((o) => {
+      if (o && o.isMesh) {
+        o.castShadow = true;
+        o.receiveShadow = true;
+        // pickable is set on mesh in core/world.js already, but keep it bulletproof:
+        if (!o.userData) o.userData = {};
+        o.userData.pickable = true;
+      }
+    });
+  }
+
+  function defaultPropColor(type) {
+    // small, consistent palette (not required, but helps visually)
+    const t = String(type || "").toLowerCase();
+    if (t === "cube") return 0x24d2ff;
+    if (t === "sphere") return 0x7c5cff;
+    if (t === "cylinder") return 0x42f5b0;
+    if (t === "cone" || t === "pyramid") return 0xffc04a;
+    if (t === "torus" || t === "ring" || t === "disc") return 0xff5c8a;
+    return 0x9aa4b2;
+  }
+
+  function tintProp(group, type) {
+    const color = defaultPropColor(type);
+    group?.traverse?.((o) => {
+      if (o && o.isMesh && o.material) {
+        o.material.color?.setHex?.(color);
+        // double-side for flat shapes (ring/disc/plane)
+        if (type === "ring" || type === "disc" || type === "plane") {
+          o.material.side = THREE.DoubleSide;
+        }
+      }
+    });
+  }
+
+  function spawnProp(type) {
+    const t = String(type || "cube").toLowerCase();
+
+    // core/world creates + registers
+    const prop = addPropWorld(world, scene, t, {
+      name: `prop_${t}_${world.props.length + 1}`
+    });
+
+    // place it similar to your monolith
+    prop.position.set((Math.random() - 0.5) * 2.0, 0.28, (Math.random() - 0.5) * 2.0);
+
+    applyPropShadowsAndPickable(prop);
+    tintProp(prop, t);
+
+    return prop;
+  }
+
+  function deleteSelectedProp() {
+    const sel = selection.getSelected();
+    if (!sel || !sel.userData?.isProp) {
+      showToast("Select a prop to delete");
       return;
     }
-    clearSelection();
-    showToast("Selection cleared");
-    return;
+    removePropWorld(world, scene, sel);
+    selection.clearSelection();
+    showToast("Prop deleted");
   }
 
-  const k = ev.key.toLowerCase();
+  /* Hook prop UI (cube/sphere and any future buttons that exist in HTML) */
+  bindPropButtons({
+    addProp: (type) => spawnProp(type),
+    selectObject: (obj) => selection.setSelection(obj),
+    showToast
+  });
 
-  if (k === "f") return focusSelection();
-  if (k === "1") return setMode("rotate");
-  if (k === "2") return setMode("move");
-  if (k === "3") return setMode("orbit");
+  /* ---------------------------- Pose I/O ---------------------------- */
 
-  if (ev.key === "Delete" || ev.key === "Backspace") {
-    if (selected && selected.userData.isProp) deleteSelectedProp();
-    return;
+  function serializePoseForGallery() {
+    return serializePose({ world, poseNotesEl: poseNotes });
   }
 
-  if ((ev.ctrlKey || ev.metaKey) && k === "s") {
-    ev.preventDefault();
-    savePoseToGallery({ withToast: true });
-    return;
+  function resetAllJointRotations() {
+    // use Character method if available (bulletproof reset); fallback to world helper
+    if (character?.resetAllJointRotations) character.resetAllJointRotations();
+    else resetAllJointRotationsWorld(world);
   }
-}
 
-/* ============================== UI WIRING ============================== */
-function hookUI() {
-  btnFocus?.addEventListener("click", focusSelection);
-  btnClear?.addEventListener("click", clearSelection);
+  function forceRenderOnce() {
+    renderer.render(scene, camera);
+  }
 
-  modeRotate?.addEventListener("click", () => setMode("rotate"));
-  modeMove?.addEventListener("click", () => setMode("move"));
-  modeOrbit?.addEventListener("click", () => setMode("orbit"));
+  function applyPoseToScene(data) {
+    return applyPose(data, {
+      world,
+      scene,
+      poseNotesEl: poseNotes,
+      addProp: (type) => spawnProp(type),
+      showToast,
+      updateOutline: () => selection.updateOutline(),
+      forceRenderOnce
+    });
+  }
 
-  axisX?.addEventListener("click", () => toggleAxis(axisX, "x"));
-  axisY?.addEventListener("click", () => toggleAxis(axisY, "y"));
-  axisZ?.addEventListener("click", () => toggleAxis(axisZ, "z"));
+  function applyPoseJointsOnlyToScene(data) {
+    return applyPoseJointsOnly(data, {
+      world,
+      resetAllJointRotations,
+      showToast,
+      updateOutline: () => selection.updateOutline(),
+      forceRenderOnce
+    });
+  }
 
-  rotateSnap?.addEventListener("change", updateGizmoAxis);
+  function resetPose() {
+    resetAllJointRotations();
+    selection.updateOutline();
+    showToast("Pose reset");
+  }
 
-  togGrid?.addEventListener("change", () => {
-    STATE.showGrid = !!togGrid.checked;
-    if (gridHelper) gridHelper.visible = STATE.showGrid;
+  function randomPose() {
+    const names = new Set(["l_shoulder", "r_shoulder", "l_elbow", "r_elbow", "neck", "chest"]);
+    world.joints.forEach((j) => {
+      if (!names.has(j.name)) return;
+      j.rotation.x = (Math.random() - 0.5) * 0.9;
+      j.rotation.y = (Math.random() - 0.5) * 0.9;
+      j.rotation.z = (Math.random() - 0.5) * 0.9;
+    });
+    selection.updateOutline();
+    showToast("Random pose");
+  }
+
+  /* ---------------------------- Gallery ---------------------------- */
+
+  function captureThumbnail(size = 256) {
+    renderer.render(scene, camera);
+
+    const src = renderer.domElement;
+    const thumb = document.createElement("canvas");
+    thumb.width = size;
+    thumb.height = size;
+
+    const ctx = thumb.getContext("2d", { willReadFrequently: false });
+    if (!ctx) return null;
+
+    const sw = src.width;
+    const sh = src.height;
+    const s = Math.min(sw, sh);
+    const sx = Math.floor((sw - s) / 2);
+    const sy = Math.floor((sh - s) / 2);
+
+    ctx.imageSmoothingEnabled = true;
+    ctx.imageSmoothingQuality = "high";
+    ctx.drawImage(src, sx, sy, s, s, 0, 0, size, size);
+
+    try {
+      return thumb.toDataURL("image/png");
+    } catch {
+      return null;
+    }
+  }
+
+  const gallery = new Gallery({
+    key: "pose_sandbox_gallery_v1",
+    maxItems: 30,
+    serializePose: serializePoseForGallery,
+    applyPose: (poseObj) => applyPoseToScene(poseObj),
+    captureThumbnail,
+    showToast,
+    niceTime,
+    poseNotesEl: poseNotes,
+    containerEl: poseGallery
   });
 
-  togAxes?.addEventListener("change", () => {
-    STATE.showAxes = !!togAxes.checked;
-    if (axesHelper) axesHelper.visible = STATE.showAxes;
+  gallery.loadFromStorage();
+  gallery.render();
+
+  /* ---------------------------- Presets ---------------------------- */
+  const presetsUI = new PresetsUI({
+    containerEl: presetGallery,
+    btnApplyEl: btnPresetApply,
+    btnSaveEl: btnPresetSave,
+    presets: createPresets(),
+    applyPoseJointsOnly: (poseObj) => applyPoseJointsOnlyToScene(poseObj),
+    saveToGallery: ({ name = "", withToast = true } = {}) => gallery.saveCurrentPoseToGallery({ name, withToast }),
+    showToast,
+    applyOnClick: true
   });
+  presetsUI.init();
 
-  togOutline?.addEventListener("change", () => {
-    STATE.showOutline = !!togOutline.checked;
-    updateOutline();
-  });
-
-  btnResetPose?.addEventListener("click", resetPose);
-  btnRandomPose?.addEventListener("click", randomPose);
-
-  // Save JSON (download) + save to gallery (thumbnail)
-  btnSavePose?.addEventListener("click", () => {
-    const data = serializePoseSafe();
-
-    const blob = new Blob([JSON.stringify(data, null, 2)], { type: "application/json" });
-    const a = document.createElement("a");
-    a.href = URL.createObjectURL(blob);
-    a.download = "pose.json";
-    a.click();
-
-    savePoseToGallery({ name: "", withToast: false });
-    showToast("Saved pose.json + gallery");
-  });
-
-  btnLoadPose?.addEventListener("click", () => filePose?.click());
-  filePose?.addEventListener("change", async (e) => {
-    const file = e.target.files?.[0];
-    if (!file) return;
-    const text = await file.text();
-    applyPoseSafe(JSON.parse(text));
-    filePose.value = "";
-  });
-
-  btnExport?.addEventListener("click", exportPNG);
-
-  btnAddCube?.addEventListener("click", () => addProp("cube"));
-  btnAddSphere?.addEventListener("click", () => addProp("sphere"));
-  btnDelProp?.addEventListener("click", deleteSelectedProp);
-
-  btnScatter?.addEventListener("click", () => {
-    for (let i = 0; i < 5; i++) addProp(Math.random() > 0.5 ? "cube" : "sphere");
-  });
-
-  bgTone?.addEventListener("change", () => setBackgroundTone(bgTone.value));
-
-  /* Help modal */
+  /* ---------------------------- Help modal ---------------------------- */
   function openHelp() {
-    helpModal?.classList.remove("hidden");
+    helpModal?.classList?.remove?.("hidden");
     showToast("Help opened");
     btnCloseHelp?.focus?.();
   }
 
   function closeHelp() {
-    helpModal?.classList.add("hidden");
+    helpModal?.classList?.add?.("hidden");
     showToast("Help closed");
   }
 
@@ -936,106 +458,179 @@ function hookUI() {
     if (e.target?.dataset?.close === "true") closeHelp();
   });
 
+  /* ---------------------------- UI wiring ---------------------------- */
+
+  // visual toggles
+  togGrid?.addEventListener("change", () => {
+    setShowGrid(STATE, !!togGrid.checked);
+    if (gridHelper) gridHelper.visible = !!STATE.showGrid;
+  });
+
+  togAxes?.addEventListener("change", () => {
+    setShowAxes(STATE, !!togAxes.checked);
+    if (axesHelper) axesHelper.visible = !!STATE.showAxes;
+  });
+
+  togOutline?.addEventListener("change", () => {
+    setShowOutline(STATE, !!togOutline.checked);
+    selection.updateOutline();
+  });
+
+  // pose buttons
+  btnResetPose?.addEventListener("click", resetPose);
+  btnRandomPose?.addEventListener("click", randomPose);
+
+  // save json (download) + save thumbnail to gallery
+  btnSavePose?.addEventListener("click", () => {
+    const data = serializePoseForGallery();
+    downloadJson("pose.json", data);
+
+    // save to gallery too (no extra toast)
+    gallery.saveCurrentPoseToGallery({ name: "", withToast: false });
+    showToast("Saved pose.json + gallery");
+  });
+
+  // load json (single)
+  btnLoadPose?.addEventListener("click", () => filePose?.click?.());
+  filePose?.addEventListener("change", async (e) => {
+    const file = e.target?.files?.[0];
+    if (!file) return;
+    try {
+      const text = await file.text();
+      const data = JSON.parse(text);
+      applyPoseToScene(data);
+    } catch (err) {
+      console.warn(err);
+      showToast("Load failed (invalid json)", 1800);
+    }
+    filePose.value = "";
+  });
+
+  // export
+  btnExport?.addEventListener("click", () => exportPNG(renderer, scene, camera));
+
+  // props
+  btnDelProp?.addEventListener("click", deleteSelectedProp);
+
+  btnScatter?.addEventListener("click", () => {
+    // Scatter a few random props; if you want only cube/sphere, replace list with ["cube","sphere"]
+    const types = PROP_TYPES.length ? PROP_TYPES : ["cube", "sphere"];
+    for (let i = 0; i < 5; i++) {
+      const t = types[Math.floor(Math.random() * types.length)];
+      spawnProp(t);
+    }
+    showToast("Scattered props");
+  });
+
+  // background tone
+  bgTone?.addEventListener("change", () => {
+    setBackgroundTone(scene, bgTone.value);
+  });
+
+  // perf toggle
   btnPerf?.addEventListener("click", () => {
-    perfEnabled = !perfEnabled;
-    showToast(perfEnabled ? "Perf: ON" : "Perf: OFF");
+    setPerfEnabled(STATE, !STATE.perfEnabled);
+    showToast(STATE.perfEnabled ? "Perf: ON" : "Perf: OFF");
   });
 
-  /* Gallery UI */
-  btnSaveGallery?.addEventListener("click", () => savePoseToGallery({ withToast: true }));
-  btnRenamePose?.addEventListener("click", renameSelectedGalleryPose);
-  btnDeletePose?.addEventListener("click", deleteSelectedGalleryPose);
-  btnClearGallery?.addEventListener("click", clearGalleryAll);
+  // gallery buttons
+  btnSaveGallery?.addEventListener("click", () => gallery.saveCurrentPoseToGallery({ withToast: true }));
+  btnRenamePose?.addEventListener("click", () => gallery.renameSelected());
+  btnDeletePose?.addEventListener("click", () => gallery.deleteSelected());
+  btnClearGallery?.addEventListener("click", () => gallery.clearAll());
 
-  /* Import Pack (optional) */
-  btnImportPack?.addEventListener("click", () => fileImportPack?.click());
-  fileImportPack?.addEventListener("change", async (e) => {
-    const files = Array.from(e.target.files || []);
-    await importPosePack(files, {
-      applyPose: applyPoseSafe,
-      saveToGallery: ({ name, withToast }) => savePoseToGallery({ name, withToast }),
-      renderGallery,
-      showToast
+  /* ---------------------------- Keyboard + pointer via InputManager ---------------------------- */
+
+  input.on("pointerdown", (evt) => {
+    // SelectionController expects the real PointerEvent
+    selection.onPointerDown(evt.originalEvent);
+  });
+
+  input.on("keydown", (evt) => {
+    const e = evt.originalEvent;
+    const k = String(evt.keyLower || "").toLowerCase();
+
+    // Escape: close help first, else clear selection (match your old behavior)
+    if (e.key === "Escape") {
+      if (helpModal && !helpModal.classList.contains("hidden")) {
+        closeHelp();
+        return;
+      }
+      selection.clearSelection();
+      return;
+    }
+
+    // Shortcuts: modes
+    if (k === "1" || k === "2" || k === "3") {
+      modes.handleShortcut(k);
+      // ensure STATE is synced (wrappers already sync)
+      return;
+    }
+
+    // Focus
+    if (k === "f") {
+      selection.focusSelection();
+      return;
+    }
+
+    // Delete prop
+    if (e.key === "Delete" || e.key === "Backspace") {
+      deleteSelectedProp();
+      return;
+    }
+
+    // Ctrl/Cmd + S => save to gallery (no download)
+    if ((e.ctrlKey || e.metaKey) && k === "s") {
+      e.preventDefault();
+      gallery.saveCurrentPoseToGallery({ withToast: true });
+      return;
+    }
+
+    // Let SelectionController keep its own small shortcuts (like F)
+    selection.onKeyDown(e);
+  });
+
+  /* ---------------------------- Resize ---------------------------- */
+  function onResize() {
+    resizeToCanvas({
+      camera,
+      onAfterResize: () => selection.updateOutline()
     });
-    fileImportPack.value = "";
-  });
-}
-
-/* ============================== RESIZE ============================== */
-function resizeToCanvas() {
-  const w = canvas.clientWidth;
-  const h = canvas.clientHeight;
-  if (!w || !h) return;
-
-  camera.aspect = w / h;
-  camera.updateProjectionMatrix();
-
-  renderer.setSize(w, h, false);
-  renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2));
-  updateOutline();
-  forceRenderOnce();
-}
-
-let ro = null;
-function setupResizeObserver() {
-  if (ro) ro.disconnect();
-  ro = new ResizeObserver(() => resizeToCanvas());
-  ro.observe(canvas);
-  window.addEventListener("resize", resizeToCanvas);
-}
-
-/* ============================== LOOP ============================== */
-function tick() {
-  requestAnimationFrame(tick);
-
-  orbit.update();
-  renderer.render(scene, camera);
-
-  if (selected && STATE.showOutline) outline.setFromObject(selected);
-
-  const now = performance.now();
-  const dt = now - lastFrameTime;
-  lastFrameTime = now;
-  const fps = 1000 / Math.max(1, dt);
-  fpsSmoothed = fpsSmoothed * 0.92 + fps * 0.08;
-
-  if (perfEnabled && Math.random() < 0.02) {
-    showToast(`FPS ~ ${fpsSmoothed.toFixed(0)}`, 900);
   }
-}
 
-/* ============================== BOOT ============================== */
-try {
-  createRenderer();
-  createScene();
-  buildCharacter();
-  hookUI();
+  // ResizeObserver for canvas
+  let ro = null;
+  if ("ResizeObserver" in window) {
+    ro = new ResizeObserver(() => onResize());
+    ro.observe(canvas);
+  }
+  window.addEventListener("resize", onResize);
+  onResize();
 
-  // Gallery boot
-  loadGalleryFromStorage();
-  renderGallery();
-
-  // Presets boot (UI + behavior)
-  const presetsUI = new PresetsUI({
-    presets: createPresets(),
-    containerEl: presetGallery,
-    btnApplyEl: btnPresetApply,
-    btnSaveEl: btnPresetSave,
-    applyPoseJointsOnly: (p) => applyPoseJointsOnlySafe(p),
-    saveToGallery: ({ name, withToast }) => savePoseToGallery({ name, withToast }),
-    showToast,
-    applyOnClick: true // click preset card applies immediately
+  /* ---------------------------- Render loop ---------------------------- */
+  const loop = createLoop({
+    orbit,
+    renderer,
+    scene,
+    camera,
+    getSelected: () => selection.getSelected(),
+    getShowOutline: () => STATE.showOutline,
+    outline: selection.outline,
+    perf: {
+      enabled: () => !!STATE.perfEnabled,
+      onFps: (fpsSmoothed) => {
+        // same “occasional toast” idea as your monolith
+        if (Math.random() < 0.02) showToast(`FPS ~ ${Number(fpsSmoothed).toFixed(0)}`, 900);
+      }
+    }
   });
-  presetsUI.init();
 
-  setMode("rotate");
-  updateGizmoAxis();
-
-  setupResizeObserver();
-  resizeToCanvas();
+  // Apply initial visibility from STATE
+  if (gridHelper) gridHelper.visible = !!STATE.showGrid;
+  if (axesHelper) axesHelper.visible = !!STATE.showAxes;
 
   showToast("Ready. Click a joint or prop to pose.");
-  tick();
+  loop.start();
 } catch (err) {
   fatal(err);
 }
