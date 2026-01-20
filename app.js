@@ -4,11 +4,11 @@
 
 import * as THREE from "three";
 
-import { Character } from "./character/Character.js";
+import { Character } from "./character/character.js";
 
-import { InputManager, bindPropButtons } from "./controls/input.js";
-import { ModesController } from "./controls/Modes.js";
-import { SelectionController } from "./controls/Selection.js";
+import { InputManager, bindPropButtons } from "./controls/inputs.js";
+import { ModesController } from "./controls/modes.js";
+import { SelectionController } from "./controls/selection.js";
 
 import { clamp, degToRad, makeToast, niceTime } from "./core/helpers.js";
 import { createState, setShowAxes, setShowGrid, setShowOutline, setPerfEnabled } from "./core/state.js";
@@ -25,7 +25,7 @@ import { createRenderer } from "./engine/renderer.js";
 import { createScene, setBackgroundTone } from "./engine/scene.js";
 import { createLoop } from "./engine/loop.js";
 
-import { Gallery } from "./gallery/Gallery.js";
+import { Gallery } from "./gallery/gallery.js";
 
 import { serializePose, applyPose, applyPoseJointsOnly } from "./poses/pose-io.js";
 import { createPresets, PresetsUI } from "./poses/presets.js";
